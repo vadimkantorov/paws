@@ -16,7 +16,6 @@ region = us-west-3
 ######################
 
 bash create_key_pair.sh detreg1
-
 bash create_security_group.sh detreg1
 
 AMI=$(bash find_ubuntu_ami.sh)

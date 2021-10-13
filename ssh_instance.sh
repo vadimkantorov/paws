@@ -1,1 +1,1 @@
-ssh -i ~/.ssh/<key_pair>.pem ubuntu@<IP_ADDRESS>
+ssh -i ~/.poehali/detreg3.pem ubuntu@13.38.1.106
