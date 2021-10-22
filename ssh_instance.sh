@@ -1,1 +1,1 @@
-ssh -i ~/.poehali/detreg3.pem ubuntu@13.38.1.106
+ssh -i ~/.poehali/detreg4.pem ubuntu@15.188.238.244

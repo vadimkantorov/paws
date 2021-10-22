@@ -15,10 +15,10 @@ output = json
 region = us-west-3
 ######################
 
-bash create_key_pair.sh detreg1
-bash create_security_group.sh detreg1
+bash create_key_pair.sh detreg4
+bash create_security_group.sh detreg4
+bash create_instance_profile.sh detreg4
 
-AMI=$(bash find_ubuntu_ami.sh)
+bash launch_micro.sh detreg4 $(bash find_ubuntu_ami.sh)
 
-bash launch_micro.sh detreg1 $AMI
 ```
