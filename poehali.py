@@ -27,7 +27,7 @@ def json_converter(o):
     if isinstance(o, datetime.datetime):
         return o.__str__()
 
-def setup(name, root, region, availability_zone):
+def setup(name, root, region, availability_zone, vpc_id = None):
     root = os.path.expanduser(os.path.join(root, '.poehali', name))
     os.makedirs(root, exist_ok = True)
     ec2 = boto3.client('ec2', region_name = region)
@@ -37,13 +37,23 @@ def setup(name, root, region, availability_zone):
     write_text(root, 'key.pem', key_pair['KeyMaterial'])
     
     cidr_vpc = '192.168.0.0/16'
-    vpc = ec2.create_vpc(CidrBlock = cidr_vpc,
-        InstanceTenancy='default',
-        TagSpecifications = T(name, 'vpc')
-    )['Vpc']
-    write_text(root, 'vpc_id.txt', vpc['VpcId'])
+    
+    if vpc_id is None:
+        try:
+            vpc = ec2.create_default_vpc()['Vpc']
+            vpc_id = vpc['VpcId'])
+        except:
+            vpc_id_global = os.path.join(root, '../vpc_id.txt')
+            if os.path.exists(vpc_id_global):
+                vpc_id = read_text(vpc_id_global)
+            else:
+                vpc = ec2.create_vpc(CidrBlock = cidr_vpc, InstanceTenancy='default', TagSpecifications = T(name, 'vpc'))['Vpc']
+                vpc_id = vpc['VpcId'])
+                write_text(root, '../vpc_id.txt', vpc_id)
 
-    subnet = ec2.create_subnet(VpcId = vpc['VpcId'], AvailabilityZone = availability_zone, CidrBlock = cidr_vpc, TagSpecifications = T(name, 'subnet'))['Subnet']
+    write_text(root, 'vpc_id.txt', vpc_id)
+
+    subnet = ec2.create_subnet(VpcId = vpc_id, AvailabilityZone = availability_zone, CidrBlock = cidr_vpc, TagSpecifications = T(name, 'subnet'))['Subnet']
     write_text(root, 'subnet_id.txt', subnet['SubnetId'])
     
     security_group = ec2.create_security_group(GroupName = name, Description = name)
@@ -76,14 +86,18 @@ def setup(name, root, region, availability_zone):
     role_added_to_instance_profile = iam.add_role_to_instance_profile(InstanceProfileName = name, RoleName = name)
     write_json(root, 'role_added_to_instance_profile.txt', role_added_to_instance_profile)
 
-def setup_cold_disk(name, root, region, availability_zone, cold_disk_size_gb, cold_disk_size_iops = 100):
+def setup_disks(name, root, region, availability_zone, cold_disk_size_gb, hot_disk_size_gb, iops = 100):
     root = os.path.expanduser(os.path.join(root, '.poehali', name))
     os.makedirs(root, exist_ok = True)
     ec2 = boto3.client('ec2', region_name = region)
     
-    cold_disk_created = ec2.create_volume(VolumeType = 'io1', MultiAttachEnabled = True, AvailabilityZone = availability_zone, Size = cold_disk_size_gb, Iops = cold_disk_size_iops, TagSpecifications = T(name, 'volume', 'datasets'))
+    cold_disk_created = ec2.create_volume(VolumeType = 'io1', MultiAttachEnabled = True, AvailabilityZone = availability_zone, Size = cold_disk_size_gb, Iops = iops, TagSpecifications = T(name, 'volume', 'datasets'))
     write_json(root, 'cold_disk_created.txt', cold_disk_created)
     write_text(root, 'cold_disk_volume_id.txt', cold_disk_created['VolumeId'])
+    
+    hot_disk_created = ec2.create_volume(VolumeType = 'io1', MultiAttachEnabled = True, AvailabilityZone = availability_zone, Size = hot_disk_size_gb, Iops = iops, TagSpecifications = T(name, 'volume', 'experiments'))
+    write_json(root, 'hot_disk_created.txt', hot_disk_created)
+    write_text(root, 'hot_disk_volume_id.txt', hot_disk_created['VolumeId'])
 
 def download_datasets(name, root, region, availability_zone, instance_type = 't2.micro', image_name = 'ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-20210430'):
     root = os.path.expanduser(os.path.join(root, '.poehali', name))
@@ -176,6 +190,7 @@ if __name__ == '__main__':
     parser.add_argument('--cold-disk-size-gb', type = int, default = 50)
     parser.add_argument('--name', default = 'poehalitest29')
     parser.add_argument('--root', default = '~')
+    parser.add_argument('--vpc-id', default = '')
     parser.add_argument('cmd', choices = ['ps', 'ls', 'setup', 'setup_cold_disk', 'data', 'download_datasets'])
     args = parser.parse_args()
     
@@ -186,9 +201,9 @@ if __name__ == '__main__':
         ls(name = args.name, region = args.region, root = args.root)
 
     if args.cmd == 'setup':
-        setup(name = args.name, region = args.region, root = args.root, availability_zone = args.availability_zone)
+        setup(name = args.name, region = args.region, root = args.root, availability_zone = args.availability_zone, vpc_id = args.vpc_id)
     
-    if args.cmd == 'setup_cold_disk':
+    if args.cmd == 'setup_disks':
         setup_cold_disk(name = args.name, region = args.region, root = args.root, availability_zone = args.availability_zone, cold_disk_size_gb = args.cold_disk_size_gb)
     
     if args.cmd == 'download_datasets':
