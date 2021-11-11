@@ -9,7 +9,7 @@ def N(name, resource = '', suffix = ''):
     return 'poehali_' + name + ('_' + resource if resource else '') + ('_' + suffix if suffix else '')
 
 def T(name, resource, suffix = ''):
-    return [dict(ResourceType = resource, Tags = [dict(Key = 'Name', Value = name + ('_${suffix}' if suffix else '')  )])] 
+    return [dict(ResourceType = resource, Tags = [dict(Key = 'Name', Value = N(name, suffix)  )])] 
 
 def read_text(root, name):
     with open(os.path.join(root, name), 'r') as f:
@@ -38,25 +38,27 @@ def setup(name, root, region, availability_zone, vpc_id = None):
     
     cidr_vpc = '192.168.0.0/16'
     
-    if vpc_id is None:
+    if not vpc_id:
         try:
             vpc = ec2.create_default_vpc()['Vpc']
-            vpc_id = vpc['VpcId'])
+            vpc_id = vpc['VpcId']
         except:
             vpc_id_global = os.path.join(root, '../vpc_id.txt')
             if os.path.exists(vpc_id_global):
-                vpc_id = read_text(vpc_id_global)
+                vpc_id = read_text(root, '../vpc_id.txt')
             else:
-                vpc = ec2.create_vpc(CidrBlock = cidr_vpc, InstanceTenancy='default', TagSpecifications = T(name, 'vpc'))['Vpc']
-                vpc_id = vpc['VpcId'])
+                print('View VPCs @', f'https://console.aws.amazon.com/vpc/home?region={region}#vpcs:')
+                vpc = ec2.create_vpc(CidrBlock = cidr_vpc, InstanceTenancy='default', TagSpecifications = T('poehali', 'vpc'))['Vpc']
+                vpc_id = vpc['VpcId']
                 write_text(root, '../vpc_id.txt', vpc_id)
 
     write_text(root, 'vpc_id.txt', vpc_id)
 
+    print('View subnets @', f'https://console.aws.amazon.com/vpc/home?region={region}#subnets:')
     subnet = ec2.create_subnet(VpcId = vpc_id, AvailabilityZone = availability_zone, CidrBlock = cidr_vpc, TagSpecifications = T(name, 'subnet'))['Subnet']
     write_text(root, 'subnet_id.txt', subnet['SubnetId'])
     
-    security_group = ec2.create_security_group(GroupName = name, Description = name)
+    security_group = ec2.create_security_group(GroupName = name, Description = name, VpcId = vpc_id)
     write_text(root, 'security_group_id.txt', security_group['GroupId'])
 
     cidr_public_internet = '0.0.0.0/0'
@@ -87,6 +89,7 @@ def setup(name, root, region, availability_zone, vpc_id = None):
     write_json(root, 'role_added_to_instance_profile.txt', role_added_to_instance_profile)
 
 def setup_disks(name, root, region, availability_zone, cold_disk_size_gb, hot_disk_size_gb, iops = 100):
+    print('View EBS disks @', f'https://console.aws.amazon.com/ec2/v2/home?region={region}#Volumes:')
     root = os.path.expanduser(os.path.join(root, '.poehali', name))
     os.makedirs(root, exist_ok = True)
     ec2 = boto3.client('ec2', region_name = region)
@@ -162,21 +165,42 @@ def ps(name, region, root):
     os.makedirs(root, exist_ok = True)
     ec2 = boto3.client('ec2', region_name = region)
     
-    instances = ec2.describe_instances()
-    print(instances)
+    print('View instances @', f'https://console.aws.amazon.com/ec2/v2/home?region={region}#Instances', '\n')
+    instances = [instance for reservation in ec2.describe_instances()['Reservations'] for instance in reservation['Instances']]
+    for instance in instances:
+        name = [tag['Value'] for tag in instance['Tags'] if tag['Key'] == 'Name'][0]
+        availability_zone = instance['Placement']['AvailabilityZone']
+        state = instance['State']
+        instance_id = instance['InstanceId']
+        public_ip = instance.get('PublicIpAddress')
+        private_ip = instance.get('PrivateIpAddress')
+
+        if state['Name'] == 'running':
+            print(f'[{name} := {instance_id} @ {availability_zone}]: {state["Name"]}/{state["Code"]}, {public_ip or "no.public.ip.address"} ({private_ip or "no.private.ip.address"})')
+            print('ssh -i ' + os.path.join(root, 'key.pem') + f' ubuntu@{public_ip}') if public_ip else print('ssh N/A')
+            print()
+
+
+def help(region):
+    print('View instances @', f'https://console.aws.amazon.com/ec2/v2/home?region={region}#Instances')
+    print('View subnets @', f'https://console.aws.amazon.com/vpc/home?region={region}#subnets:')
+    print('View EBS disks @', f'https://console.aws.amazon.com/ec2/v2/home?region={region}#Volumes:')
+    print('View VPCs @', f'https://console.aws.amazon.com/vpc/home?region={region}#vpcs:')
 
 def ls(name, region, root):
     root = os.path.expanduser(os.path.join(root, '.poehali', name))
     os.makedirs(root, exist_ok = True)
     ec2 = boto3.client('ec2', region_name = region)
     
+    print('View EBS disks @', f'https://console.aws.amazon.com/ec2/v2/home?region={region}#Volumes:', '\n')
+
     volumes = ec2.describe_volumes()['Volumes']
     for volume in volumes:
+        name = ([tag['Value'] for tag in volume.get('Tags', []) if tag['Key'] == 'Name'] + ['NoName'])[0]
         availability_zone = volume['AvailabilityZone']
-        size = volume['Size']
-        name = [tag['Value'] for tag in volume['Tags'] if tag['Key'] == 'Name'][0]
-        volume_id = volume['VolumeId']
         state = volume['State']
+        volume_id = volume['VolumeId']
+        size = volume['Size']
 
         print(f'[{name} := {volume_id} @ {availability_zone}]: {size} Gb, {state}')
 
@@ -188,11 +212,15 @@ if __name__ == '__main__':
     parser.add_argument('--region', default = 'us-east-1')
     parser.add_argument('--availability-zone', default = 'us-east-1a')
     parser.add_argument('--cold-disk-size-gb', type = int, default = 50)
-    parser.add_argument('--name', default = 'poehalitest29')
+    parser.add_argument('--hot-disk-size-gb', type = int, default = 50)
+    parser.add_argument('--name', default = 'poehalitest38')
     parser.add_argument('--root', default = '~')
-    parser.add_argument('--vpc-id', default = '')
-    parser.add_argument('cmd', choices = ['ps', 'ls', 'setup', 'setup_cold_disk', 'data', 'download_datasets'])
+    parser.add_argument('--vpc-id')
+    parser.add_argument('cmd', choices = ['help', 'ps', 'ls', 'setup', 'setup_disks', 'data', 'download_datasets'])
     args = parser.parse_args()
+    
+    if args.cmd == 'help':
+        help(region = args.region)
     
     if args.cmd == 'ps':
         ps(name = args.name, region = args.region, root = args.root)
@@ -204,7 +232,7 @@ if __name__ == '__main__':
         setup(name = args.name, region = args.region, root = args.root, availability_zone = args.availability_zone, vpc_id = args.vpc_id)
     
     if args.cmd == 'setup_disks':
-        setup_cold_disk(name = args.name, region = args.region, root = args.root, availability_zone = args.availability_zone, cold_disk_size_gb = args.cold_disk_size_gb)
+        setup_disks(name = args.name, region = args.region, root = args.root, availability_zone = args.availability_zone, cold_disk_size_gb = args.cold_disk_size_gb, hot_disk_size_gb = args.hot_disk_size_gb)
     
     if args.cmd == 'download_datasets':
         download_datasets(name = args.name, region = args.region, root = args.root, availability_zone = args.availability_zone)
