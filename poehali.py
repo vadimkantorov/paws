@@ -11,15 +11,10 @@ def N(name, resource = '', suffix = ''):
 def T(name, resource, suffix = ''):
     return [dict(ResourceType = resource, Tags = [dict(Key = 'Name', Value = N(name, suffix)  )])] 
 
-def write_json(root, name, obj):
-    json_converter = lambda o:  o.__str__() if isinstance(o, datetime.datetime) else None
-    json.dumps(obj, indent = 2, default = json_converter)
-
 def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None):
     root = os.path.expanduser(os.path.join(root, '.poehali', name))
     os.makedirs(root, exist_ok = True)
     ec2 = boto3.client('ec2', region_name = region)
-    iam = boto3.client('iam', region_name = region)
 
     key_pair = ec2.create_key_pair(KeyName = name) # err.response['Error']['Code'] == 'InvalidKeyPair.Duplicate'
     write_text(root, name + '.pem', key_pair['KeyMaterial'])
@@ -56,20 +51,6 @@ def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None
     cold_disk_created = ec2.create_volume(VolumeType = 'io1', MultiAttachEnabled = True, AvailabilityZone = availability_zone, Size = cold_disk_size_gb, Iops = iops, TagSpecifications = T(name, 'volume', 'datasets'))
     
     hot_disk_created = ec2.create_volume(VolumeType = 'io1', MultiAttachEnabled = True, AvailabilityZone = availability_zone, Size = hot_disk_size_gb, Iops = iops, TagSpecifications = T(name, 'volume', 'experiments'))
-
-    #policy_arn = [p for p in iam.list_policies(Scope = 'AWS', PathPrefix = '/service-role/')['Policies'] if p['PolicyName'] == 'AmazonEC2RoleforSSM'][0]['Arn']
-    #policy_document = dict(
-    #    Version = '2012-10-17',
-    #    Statement = dict(
-    #        Effect = 'Allow',
-    #        Principal = dict(Service = 'ec2.amazonaws.com'),
-    #        Action = 'sts:AssumeRole'
-    #    )
-    #)
-    #role_created = iam.create_role(RoleName = name, AssumeRolePolicyDocument = json.dumps(policy_document))
-    #role_attached = iam.attach_role_policy(RoleName = name, PolicyArn = policy_arn)
-    #instance_profile_created = iam.create_instance_profile(InstanceProfileName = name)
-    #role_added_to_instance_profile = iam.add_role_to_instance_profile(InstanceProfileName = name, RoleName = name)
 
 def micro(name, root, region, availability_zone, instance_type = 't2.micro', image_name = 'ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-20210430', shutdown_after_init_script = False):
     root = os.path.expanduser(os.path.join(root, '.poehali', name))
