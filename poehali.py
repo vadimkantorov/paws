@@ -121,9 +121,10 @@ def micro(name, root, region, availability_zone, instance_type = 't2.micro', ima
 
     INSTANCEID=$(curl -s http://instance-data/latest/meta-data/instance-id)
 
-    VOlUMEID=$(aws ec2 describe-volumes --region $REGION --filters Name=tag:Name,Values=$VOLUMENAME --query Volumes[].VolumeId --output text)
-
-    aws ec2 attach-volume --device /dev/xvdf --instance-id $INSTANCEID --volume-id $VOLUMEID
+    aws ec2 attach-volume --device /dev/xvdf --instance-id $INSTANCEID --volume-id $VOLUMEID1
+    aws ec2 attach-volume --device /dev/xvdh --instance-id $INSTANCEID --volume-id $VOLUMEID2
+    
+    aws ec2 wait volume-in-use --volume-ids $VOLUMEID1 $VOLUMEID2 # attached
 
     DATASTATE="unknown"
     until [ "$DATASTATE" == "attached" ]; do
@@ -138,6 +139,8 @@ def micro(name, root, region, availability_zone, instance_type = 't2.micro', ima
 
     #mkdir ~/datasets
     #sudo mount /dev/nvme2n1 ~/datasets
+    #VOlUMEID=$(aws ec2 describe-volumes --region $REGION --filters Name=tag:Name,Values=$VOLUMENAME --query Volumes[].VolumeId --output text)
+
 
     cold_instance_run = ec2.run_instances(
         InstanceType = instance_type, 
@@ -153,16 +156,11 @@ def micro(name, root, region, availability_zone, instance_type = 't2.micro', ima
         #UserData = launch_script,
     )
 
-def gpu(
+def gpu(name, root, region, availability_zone):
+    pass
 
-def prepare_datasets(name, root, region, availability_zone):
+def datasets(name, root, region, availability_zone):
     micro(name, root, region, availability_zone, shutdown_after_init_script = True)
-
-def destroy(name):
-    pass
-
-def data():
-    pass
 
 def ps(name, region, root):
     root = os.path.expanduser(os.path.join(root, '.poehali', name))
@@ -186,11 +184,11 @@ def ps(name, region, root):
 
 
 def help(region):
-    print('Key pairs @', f'https://console.aws.amazon.com/ec2/v2/home?region={region}#KeyPairs:')
-    print('View instances @', f'https://console.aws.amazon.com/ec2/v2/home?region={region}#Instances')
-    print('View subnets @', f'https://console.aws.amazon.com/vpc/home?region={region}#subnets:')
-    print('View EBS disks @', f'https://console.aws.amazon.com/ec2/v2/home?region={region}#Volumes:')
-    print('View VPCs @', f'https://console.aws.amazon.com/vpc/home?region={region}#vpcs:')
+    print('VPCs @', f'https://console.aws.amazon.com/vpc/home?region={region}#vpcs')
+    print('Subnets @', f'https://console.aws.amazon.com/vpc/home?region={region}#subnets')
+    print('Keypairs @', f'https://console.aws.amazon.com/ec2/v2/home?region={region}#KeyPairs')
+    print('Instances @', f'https://console.aws.amazon.com/ec2/v2/home?region={region}#Instances')
+    print('EBS disks @', f'https://console.aws.amazon.com/ec2/v2/home?region={region}#Volumes')
 
 def ls(name, region, root):
     root = os.path.expanduser(os.path.join(root, '.poehali', name))
