@@ -27,66 +27,76 @@ def json_converter(o):
     if isinstance(o, datetime.datetime):
         return o.__str__()
 
-def setup(name, root, region, availability_zone, vpc_id = None):
+def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None):
     root = os.path.expanduser(os.path.join(root, '.poehali', name))
     os.makedirs(root, exist_ok = True)
     ec2 = boto3.client('ec2', region_name = region)
     iam = boto3.client('iam', region_name = region)
 
     key_pair = ec2.create_key_pair(KeyName = name) # err.response['Error']['Code'] == 'InvalidKeyPair.Duplicate'
-    write_text(root, 'key.pem', key_pair['KeyMaterial'])
+    write_text(root, name + '.pem', key_pair['KeyMaterial'])
+    os.chmod(os.path.join(root, name + '.pem'), 600)
     
     cidr_vpc = '192.168.0.0/16'
+    cidr_public_internet = '0.0.0.0/0'
     
     if not vpc_id:
-        try:
-            vpc = ec2.create_default_vpc()['Vpc']
-            vpc_id = vpc['VpcId']
-        except:
-            vpc_id_global = os.path.join(root, '../vpc_id.txt')
-            if os.path.exists(vpc_id_global):
-                vpc_id = read_text(root, '../vpc_id.txt')
-            else:
-                print('View VPCs @', f'https://console.aws.amazon.com/vpc/home?region={region}#vpcs:')
+        vpc_id = os.path.join(root, f'../{region}.txt')
+        if os.path.exists(vpc_id):
+            vpc_id = read_text(root, f'../{region}.txt')
+        else:
+            try:
+                vpc = ec2.create_default_vpc()['Vpc']
+            except:
                 vpc = ec2.create_vpc(CidrBlock = cidr_vpc, InstanceTenancy='default', TagSpecifications = T('poehali', 'vpc'))['Vpc']
-                vpc_id = vpc['VpcId']
-                write_text(root, '../vpc_id.txt', vpc_id)
+            vpc_id = vpc['VpcId']
+        
+        internet_gateway_id = ec2.create_internet_gateway()['InternetGateway']['InternetGatewayId']
+        ec2.attach_internet_gateway(InternetGatewayId = internet_gateway_id, VpcId = vpc_id)
+        
+        write_text(root, f'../{region}.txt', vpc_id)
 
-    write_text(root, 'vpc_id.txt', vpc_id)
+    if not subnet_id:
+        subnet_id = os.path.join(root, f'../{availability_zone}.txt')
+        if os.path.exists(subnet_id):
+            subnet_id = read_text(root, f'../{availability_zone}.txt')
+        else:
+            subnet_id = ec2.create_subnet(VpcId = vpc_id, AvailabilityZone = availability_zone, CidrBlock = cidr_vpc, TagSpecifications = T('poehali', 'subnet'))['Subnet']['SubnetId']
 
-    print('View subnets @', f'https://console.aws.amazon.com/vpc/home?region={region}#subnets:')
-    subnet = ec2.create_subnet(VpcId = vpc_id, AvailabilityZone = availability_zone, CidrBlock = cidr_vpc, TagSpecifications = T(name, 'subnet'))['Subnet']
-    write_text(root, 'subnet_id.txt', subnet['SubnetId'])
-    
-    security_group = ec2.create_security_group(GroupName = name, Description = name, VpcId = vpc_id)
+        route_table_id = ec2.describe_route_tables(Filters = [dict(Name = 'association.subnet-id', Values = [subnet_id])])['RouteTables'][0]['Associations'][0]['RouteTableId']
+        ec2.create_route(DestinationCidrBlock = cidr_public_internet, GatewayId = internet_gateway_id, RouteTableId = route_table_id)
+
+        write_text(root, f'../{availability_zone}.txt', subnet_id)
+
+
+    security_group = ec2.create_security_group(GroupName = name, Description = name, VpcId = vpc_id, TagSpecifications = T(name, 'security-group'))
     write_text(root, 'security_group_id.txt', security_group['GroupId'])
 
-    cidr_public_internet = '0.0.0.0/0'
-    security_group_authorized_ssh = ec2.authorize_security_group_ingress(GroupId = security_group['GroupId'], IpProtocol = 'tcp', FromPort = 22, ToPort = 22, CidrIp = cidr_public_internet)
+    security_group_authorized_ssh = ec2.authorize_security_group_ingress(GroupId = security_group['GroupId'], IpPermissions = [dict(IpProtocol = 'tcp', FromPort = 22, ToPort = 22, IpRanges = [dict(CidrIp = cidr_public_internet)])])
     write_json(root, 'security_group_authorized_ssh.txt', security_group_authorized_ssh)
 
-    policy_arn = [p for p in iam.list_policies(Scope = 'AWS', PathPrefix = '/service-role/')['Policies'] if p['PolicyName'] == 'AmazonEC2RoleforSSM'][0]['Arn']
+    #policy_arn = [p for p in iam.list_policies(Scope = 'AWS', PathPrefix = '/service-role/')['Policies'] if p['PolicyName'] == 'AmazonEC2RoleforSSM'][0]['Arn']
 
-    policy_document = dict(
-        Version = '2012-10-17',
-        Statement = dict(
-            Effect = 'Allow',
-            Principal = dict(Service = 'ec2.amazonaws.com'),
-            Action = 'sts:AssumeRole'
-        )
-    )
+    #policy_document = dict(
+    #    Version = '2012-10-17',
+    #    Statement = dict(
+    #        Effect = 'Allow',
+    #        Principal = dict(Service = 'ec2.amazonaws.com'),
+    #        Action = 'sts:AssumeRole'
+    #    )
+    #)
 
-    role_created = iam.create_role(RoleName = name, AssumeRolePolicyDocument = json.dumps(policy_document))
-    write_json(root, 'role_created.txt', role_created)
+    #role_created = iam.create_role(RoleName = name, AssumeRolePolicyDocument = json.dumps(policy_document))
+    #write_json(root, 'role_created.txt', role_created)
 
-    role_attached = iam.attach_role_policy(RoleName = name, PolicyArn = policy_arn)
-    write_json(root, 'role_attached.txt', role_attached)
+    #role_attached = iam.attach_role_policy(RoleName = name, PolicyArn = policy_arn)
+    #write_json(root, 'role_attached.txt', role_attached)
 
-    instance_profile_created = iam.create_instance_profile(InstanceProfileName = name)
-    write_json(root, 'instance_profile_created.txt', instance_profile_created)
+    #instance_profile_created = iam.create_instance_profile(InstanceProfileName = name)
+    #write_json(root, 'instance_profile_created.txt', instance_profile_created)
 
-    role_added_to_instance_profile = iam.add_role_to_instance_profile(InstanceProfileName = name, RoleName = name)
-    write_json(root, 'role_added_to_instance_profile.txt', role_added_to_instance_profile)
+    #role_added_to_instance_profile = iam.add_role_to_instance_profile(InstanceProfileName = name, RoleName = name)
+    #write_json(root, 'role_added_to_instance_profile.txt', role_added_to_instance_profile)
 
 def setup_disks(name, root, region, availability_zone, cold_disk_size_gb, hot_disk_size_gb, iops = 100):
     print('View EBS disks @', f'https://console.aws.amazon.com/ec2/v2/home?region={region}#Volumes:')
@@ -107,9 +117,9 @@ def download_datasets(name, root, region, availability_zone, instance_type = 't2
     os.makedirs(root, exist_ok = True)
     ec2 = boto3.client('ec2', region_name = region)
 
-    volume_id = read_text(root, 'cold_disk_volume_id.txt')
+    subnet_id = read_text(root, f'../{availability_zone}.txt')
+    #volume_id = read_text(root, 'cold_disk_volume_id.txt')
     security_group_id = read_text(root, 'security_group_id.txt')
-    subnet_id = read_text(root, 'subnet_id.txt')
 
     images = ec2.describe_images(Filters = [dict(Name = 'name', Values = [image_name])])
     image_id = images['Images'][0]['ImageId']
@@ -142,11 +152,12 @@ def download_datasets(name, root, region, availability_zone, instance_type = 't2
         MinCount = 1, 
         MaxCount = 1, 
         KeyName = name, 
-        IamInstanceProfile = dict(Name = name), 
         Placement = dict(AvailabilityZone = availability_zone), 
         NetworkInterfaces = [dict(DeviceIndex = 0, Groups = [security_group_id], SubnetId = subnet_id, AssociatePublicIpAddress = True)], 
         TagSpecifications = T(name, 'instance', 'datasets'),
-        UserData = launch_script,
+        
+        #IamInstanceProfile = dict(Name = name), 
+        #UserData = launch_script,
     )
     # SecurityGroupIds = [security_group_id]
     #write_text(root, 'cold_instance_run.txt', json.dumps(cold_instance_run, indent = 2, default = json_converter))
@@ -168,6 +179,8 @@ def ps(name, region, root):
     print('View instances @', f'https://console.aws.amazon.com/ec2/v2/home?region={region}#Instances', '\n')
     instances = [instance for reservation in ec2.describe_instances()['Reservations'] for instance in reservation['Instances']]
     for instance in instances:
+        #TODO: filter by project name
+
         name = [tag['Value'] for tag in instance['Tags'] if tag['Key'] == 'Name'][0]
         availability_zone = instance['Placement']['AvailabilityZone']
         state = instance['State']
@@ -175,13 +188,13 @@ def ps(name, region, root):
         public_ip = instance.get('PublicIpAddress')
         private_ip = instance.get('PrivateIpAddress')
 
-        if state['Name'] == 'running':
-            print(f'[{name} := {instance_id} @ {availability_zone}]: {state["Name"]}/{state["Code"]}, {public_ip or "no.public.ip.address"} ({private_ip or "no.private.ip.address"})')
-            print('ssh -i ' + os.path.join(root, 'key.pem') + f' ubuntu@{public_ip}') if public_ip else print('ssh N/A')
-            print()
+        print(f'[{name} := {instance_id} @ {availability_zone}]: {state["Name"]}/{state["Code"]}, {public_ip or "no.public.ip.address"} ({private_ip or "no.private.ip.address"})')
+        print('ssh -i ' + os.path.join(root, name + '.pem') + f' ubuntu@{public_ip}') if public_ip else print('ssh N/A')
+        print()
 
 
 def help(region):
+    print('Key pairs @', f'https://console.aws.amazon.com/ec2/v2/home?region={region}#KeyPairs:')
     print('View instances @', f'https://console.aws.amazon.com/ec2/v2/home?region={region}#Instances')
     print('View subnets @', f'https://console.aws.amazon.com/vpc/home?region={region}#subnets:')
     print('View EBS disks @', f'https://console.aws.amazon.com/ec2/v2/home?region={region}#Volumes:')
@@ -213,9 +226,10 @@ if __name__ == '__main__':
     parser.add_argument('--availability-zone', default = 'us-east-1a')
     parser.add_argument('--cold-disk-size-gb', type = int, default = 50)
     parser.add_argument('--hot-disk-size-gb', type = int, default = 50)
-    parser.add_argument('--name', default = 'poehalitest38')
+    parser.add_argument('--name', default = 'poehalitest43')
     parser.add_argument('--root', default = '~')
     parser.add_argument('--vpc-id')
+    parser.add_argument('--subnet-id')
     parser.add_argument('cmd', choices = ['help', 'ps', 'ls', 'setup', 'setup_disks', 'data', 'download_datasets'])
     args = parser.parse_args()
     
