@@ -68,12 +68,19 @@ def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None
 
         write_text(root, f'../{availability_zone}.txt', subnet_id)
 
-
     security_group = ec2.create_security_group(GroupName = name, Description = name, VpcId = vpc_id, TagSpecifications = T(name, 'security-group'))
     write_text(root, 'security_group_id.txt', security_group['GroupId'])
 
     security_group_authorized_ssh = ec2.authorize_security_group_ingress(GroupId = security_group['GroupId'], IpPermissions = [dict(IpProtocol = 'tcp', FromPort = 22, ToPort = 22, IpRanges = [dict(CidrIp = cidr_public_internet)])])
     write_json(root, 'security_group_authorized_ssh.txt', security_group_authorized_ssh)
+
+    cold_disk_created = ec2.create_volume(VolumeType = 'io1', MultiAttachEnabled = True, AvailabilityZone = availability_zone, Size = cold_disk_size_gb, Iops = iops, TagSpecifications = T(name, 'volume', 'datasets'))
+    write_json(root, 'cold_disk_created.txt', cold_disk_created)
+    write_text(root, 'cold_disk_volume_id.txt', cold_disk_created['VolumeId'])
+    
+    hot_disk_created = ec2.create_volume(VolumeType = 'io1', MultiAttachEnabled = True, AvailabilityZone = availability_zone, Size = hot_disk_size_gb, Iops = iops, TagSpecifications = T(name, 'volume', 'experiments'))
+    write_json(root, 'hot_disk_created.txt', hot_disk_created)
+    write_text(root, 'hot_disk_volume_id.txt', hot_disk_created['VolumeId'])
 
     #policy_arn = [p for p in iam.list_policies(Scope = 'AWS', PathPrefix = '/service-role/')['Policies'] if p['PolicyName'] == 'AmazonEC2RoleforSSM'][0]['Arn']
 
@@ -98,21 +105,7 @@ def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None
     #role_added_to_instance_profile = iam.add_role_to_instance_profile(InstanceProfileName = name, RoleName = name)
     #write_json(root, 'role_added_to_instance_profile.txt', role_added_to_instance_profile)
 
-def setup_disks(name, root, region, availability_zone, cold_disk_size_gb, hot_disk_size_gb, iops = 100):
-    print('View EBS disks @', f'https://console.aws.amazon.com/ec2/v2/home?region={region}#Volumes:')
-    root = os.path.expanduser(os.path.join(root, '.poehali', name))
-    os.makedirs(root, exist_ok = True)
-    ec2 = boto3.client('ec2', region_name = region)
-    
-    cold_disk_created = ec2.create_volume(VolumeType = 'io1', MultiAttachEnabled = True, AvailabilityZone = availability_zone, Size = cold_disk_size_gb, Iops = iops, TagSpecifications = T(name, 'volume', 'datasets'))
-    write_json(root, 'cold_disk_created.txt', cold_disk_created)
-    write_text(root, 'cold_disk_volume_id.txt', cold_disk_created['VolumeId'])
-    
-    hot_disk_created = ec2.create_volume(VolumeType = 'io1', MultiAttachEnabled = True, AvailabilityZone = availability_zone, Size = hot_disk_size_gb, Iops = iops, TagSpecifications = T(name, 'volume', 'experiments'))
-    write_json(root, 'hot_disk_created.txt', hot_disk_created)
-    write_text(root, 'hot_disk_volume_id.txt', hot_disk_created['VolumeId'])
-
-def download_datasets(name, root, region, availability_zone, instance_type = 't2.micro', image_name = 'ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-20210430'):
+def micro(name, root, region, availability_zone, instance_type = 't2.micro', image_name = 'ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-20210430', shutdown_after_init_script = False):
     root = os.path.expanduser(os.path.join(root, '.poehali', name))
     os.makedirs(root, exist_ok = True)
     ec2 = boto3.client('ec2', region_name = region)
@@ -159,11 +152,11 @@ def download_datasets(name, root, region, availability_zone, instance_type = 't2
         #IamInstanceProfile = dict(Name = name), 
         #UserData = launch_script,
     )
-    # SecurityGroupIds = [security_group_id]
-    #write_text(root, 'cold_instance_run.txt', json.dumps(cold_instance_run, indent = 2, default = json_converter))
-    
-    #cold_disk_attached = ec2.attach_volume(InstanceId = instance_id, Device = '/dev/xvdf', VolumeId = volume_id)
-    #write_text(root, 'cold_disk_attached.txt', json.dumps(cold_disk_attached, indent = 2, default = json_converter))
+
+def gpu(
+
+def prepare_datasets(name, root, region, availability_zone):
+    micro(name, root, region, availability_zone, shutdown_after_init_script = True)
 
 def destroy(name):
     pass
@@ -176,7 +169,6 @@ def ps(name, region, root):
     os.makedirs(root, exist_ok = True)
     ec2 = boto3.client('ec2', region_name = region)
     
-    print('View instances @', f'https://console.aws.amazon.com/ec2/v2/home?region={region}#Instances', '\n')
     instances = [instance for reservation in ec2.describe_instances()['Reservations'] for instance in reservation['Instances']]
     for instance in instances:
         #TODO: filter by project name
@@ -230,7 +222,7 @@ if __name__ == '__main__':
     parser.add_argument('--root', default = '~')
     parser.add_argument('--vpc-id')
     parser.add_argument('--subnet-id')
-    parser.add_argument('cmd', choices = ['help', 'ps', 'ls', 'setup', 'setup_disks', 'data', 'download_datasets'])
+    parser.add_argument('cmd', choices = ['help', 'ps', 'ls', 'setup', 'micro', 'prepare_datasets'])
     args = parser.parse_args()
     
     if args.cmd == 'help':
@@ -243,10 +235,7 @@ if __name__ == '__main__':
         ls(name = args.name, region = args.region, root = args.root)
 
     if args.cmd == 'setup':
-        setup(name = args.name, region = args.region, root = args.root, availability_zone = args.availability_zone, vpc_id = args.vpc_id)
+        setup(name = args.name, region = args.region, root = args.root, availability_zone = args.availability_zone, vpc_id = args.vpc_id, cold_disk_size_gb = args.cold_disk_size_gb, hot_disk_size_gb = args.hot_disk_size_gb)
     
-    if args.cmd == 'setup_disks':
-        setup_disks(name = args.name, region = args.region, root = args.root, availability_zone = args.availability_zone, cold_disk_size_gb = args.cold_disk_size_gb, hot_disk_size_gb = args.hot_disk_size_gb)
-    
-    if args.cmd == 'download_datasets':
-        download_datasets(name = args.name, region = args.region, root = args.root, availability_zone = args.availability_zone)
+    if args.cmd == 'prepare_datasets':
+        prepare_datasets(name = args.name, region = args.region, root = args.root, availability_zone = args.availability_zone)
