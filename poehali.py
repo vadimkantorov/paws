@@ -11,21 +11,9 @@ def N(name, resource = '', suffix = ''):
 def T(name, resource, suffix = ''):
     return [dict(ResourceType = resource, Tags = [dict(Key = 'Name', Value = N(name, suffix)  )])] 
 
-def read_text(root, name):
-    with open(os.path.join(root, name), 'r') as f:
-        return f.read()
-
-def write_text(root, name, text):
-    with open(os.path.join(root, name), 'w') as f:
-        f.write(text)
-    print('Written to', os.path.join(root, name))
-
 def write_json(root, name, obj):
-    write_text(root, name, json.dumps(obj, indent = 2, default = json_converter))
-
-def json_converter(o):
-    if isinstance(o, datetime.datetime):
-        return o.__str__()
+    json_converter = lambda o:  o.__str__() if isinstance(o, datetime.datetime) else None
+    json.dumps(obj, indent = 2, default = json_converter)
 
 def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None):
     root = os.path.expanduser(os.path.join(root, '.poehali', name))
@@ -41,9 +29,6 @@ def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None
     cidr_public_internet = '0.0.0.0/0'
     
     if not vpc_id:
-        vpc_id = os.path.join(root, f'../{region}.txt')
-        if os.path.exists(vpc_id):
-            vpc_id = read_text(root, f'../{region}.txt')
         else:
             try:
                 vpc = ec2.create_default_vpc()['Vpc']
@@ -57,33 +42,22 @@ def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None
         write_text(root, f'../{region}.txt', vpc_id)
 
     if not subnet_id:
-        subnet_id = os.path.join(root, f'../{availability_zone}.txt')
         if os.path.exists(subnet_id):
-            subnet_id = read_text(root, f'../{availability_zone}.txt')
         else:
             subnet_id = ec2.create_subnet(VpcId = vpc_id, AvailabilityZone = availability_zone, CidrBlock = cidr_vpc, TagSpecifications = T('poehali', 'subnet'))['Subnet']['SubnetId']
 
         route_table_id = ec2.describe_route_tables(Filters = [dict(Name = 'association.subnet-id', Values = [subnet_id])])['RouteTables'][0]['Associations'][0]['RouteTableId']
         ec2.create_route(DestinationCidrBlock = cidr_public_internet, GatewayId = internet_gateway_id, RouteTableId = route_table_id)
 
-        write_text(root, f'../{availability_zone}.txt', subnet_id)
-
     security_group = ec2.create_security_group(GroupName = name, Description = name, VpcId = vpc_id, TagSpecifications = T(name, 'security-group'))
-    write_text(root, 'security_group_id.txt', security_group['GroupId'])
 
     security_group_authorized_ssh = ec2.authorize_security_group_ingress(GroupId = security_group['GroupId'], IpPermissions = [dict(IpProtocol = 'tcp', FromPort = 22, ToPort = 22, IpRanges = [dict(CidrIp = cidr_public_internet)])])
-    write_json(root, 'security_group_authorized_ssh.txt', security_group_authorized_ssh)
 
     cold_disk_created = ec2.create_volume(VolumeType = 'io1', MultiAttachEnabled = True, AvailabilityZone = availability_zone, Size = cold_disk_size_gb, Iops = iops, TagSpecifications = T(name, 'volume', 'datasets'))
-    write_json(root, 'cold_disk_created.txt', cold_disk_created)
-    write_text(root, 'cold_disk_volume_id.txt', cold_disk_created['VolumeId'])
     
     hot_disk_created = ec2.create_volume(VolumeType = 'io1', MultiAttachEnabled = True, AvailabilityZone = availability_zone, Size = hot_disk_size_gb, Iops = iops, TagSpecifications = T(name, 'volume', 'experiments'))
-    write_json(root, 'hot_disk_created.txt', hot_disk_created)
-    write_text(root, 'hot_disk_volume_id.txt', hot_disk_created['VolumeId'])
 
     #policy_arn = [p for p in iam.list_policies(Scope = 'AWS', PathPrefix = '/service-role/')['Policies'] if p['PolicyName'] == 'AmazonEC2RoleforSSM'][0]['Arn']
-
     #policy_document = dict(
     #    Version = '2012-10-17',
     #    Statement = dict(
@@ -92,55 +66,44 @@ def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None
     #        Action = 'sts:AssumeRole'
     #    )
     #)
-
     #role_created = iam.create_role(RoleName = name, AssumeRolePolicyDocument = json.dumps(policy_document))
-    #write_json(root, 'role_created.txt', role_created)
-
     #role_attached = iam.attach_role_policy(RoleName = name, PolicyArn = policy_arn)
-    #write_json(root, 'role_attached.txt', role_attached)
-
     #instance_profile_created = iam.create_instance_profile(InstanceProfileName = name)
-    #write_json(root, 'instance_profile_created.txt', instance_profile_created)
-
     #role_added_to_instance_profile = iam.add_role_to_instance_profile(InstanceProfileName = name, RoleName = name)
-    #write_json(root, 'role_added_to_instance_profile.txt', role_added_to_instance_profile)
 
 def micro(name, root, region, availability_zone, instance_type = 't2.micro', image_name = 'ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-20210430', shutdown_after_init_script = False):
     root = os.path.expanduser(os.path.join(root, '.poehali', name))
     os.makedirs(root, exist_ok = True)
     ec2 = boto3.client('ec2', region_name = region)
 
-    subnet_id = read_text(root, f'../{availability_zone}.txt')
-    #volume_id = read_text(root, 'cold_disk_volume_id.txt')
-    security_group_id = read_text(root, 'security_group_id.txt')
+    subnet_id = ec2.describe_subnets(Filters = [dict(name = 'tag:Name', values = [N('subnet')])]) 
+    
+    security_group_id = ec2.describe_security_groups(GroupNames = [N('security_group')])
 
-    images = ec2.describe_images(Filters = [dict(Name = 'name', Values = [image_name])])
-    image_id = images['Images'][0]['ImageId']
+    image_id = ec2.describe_images(Filters = [dict(Name = 'name', Values = [image_name])])['Images'][0]['ImageId']
+    
+    volume_id_datasets = ec2.describe_volumes(Filters = [dict(Name = 'tag:Name', Values = [N(name, 'datasets')])])['Volumes'][0]['VolumeId']
+    
+    volume_id_experiments = ec2.describe_volumes(Filters = [dict(Name = 'tag:Name', Values = [N(name, 'experiments')])])['Volumes'][0]['VolumeId']
 
     launch_script = '''#!/bin/bash -xe
-
     INSTANCEID=$(curl -s http://instance-data/latest/meta-data/instance-id)
+    mkdir ~/datasets ~/experiments
 
     aws ec2 attach-volume --device /dev/xvdf --instance-id $INSTANCEID --volume-id $VOLUMEID1
     aws ec2 attach-volume --device /dev/xvdh --instance-id $INSTANCEID --volume-id $VOLUMEID2
     
     aws ec2 wait volume-in-use --volume-ids $VOLUMEID1 $VOLUMEID2 # attached
 
-    DATASTATE="unknown"
-    until [ "$DATASTATE" == "attached" ]; do
-      DATASTATE=$(aws ec2 describe-volumes --region $REGION --filters Name=attachment.instance-id,Values=$INSTANCEID Name=attachment.device,Values=/dev/xvdh --query Volumes[].Attachments[].State --output text)
-      sleep 5
-    done
+    [ "$(file -b -s /dev/xvdf)" == "data" ] && mkfs -t xfs /dev/xvdf
+    [ "$(file -b -s /dev/xvdh)" == "data" ] && mkfs -t xfs /dev/xvdh
+    
+    mount /dev/xvdf ~/datasets
+    mount /dev/xvdh ~/experiments
+    
+    '''.replace('$VOLUMEID1', volume_id_datasets).replace('$VOLUMEID2', volume_id_checkpoints)
 
-    if [ "$(file -b -s /dev/xvdh)" == "data" ]; then
-      mkfs -t xfs /dev/xvdh
-    fi
-    '''.replace('$REGION', region).replace('$VOLUMENAME', name + '_datasets')
-
-    #mkdir ~/datasets
-    #sudo mount /dev/nvme2n1 ~/datasets
     #VOlUMEID=$(aws ec2 describe-volumes --region $REGION --filters Name=tag:Name,Values=$VOLUMENAME --query Volumes[].VolumeId --output text)
-
 
     cold_instance_run = ec2.run_instances(
         InstanceType = instance_type, 
