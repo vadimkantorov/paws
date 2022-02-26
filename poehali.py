@@ -113,20 +113,28 @@ def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None
 
         policy_document = dict(
             Version = '2012-10-17',
-            Statement = [dict(
-                Effect = 'Allow',
-                Action = [
-                    'ec2:AttachVolume',
-                    'ec2:DetachVolume',
-                    'ec2:DescribeVolumes',
-                    'ec2:DescribeVolumeAttribute',
-                    'ec2:DescribeVolumeStatus',
+            Statement = [
+                dict(
+                    Effect = 'Allow',
+                    Action = [
+                        'ec2:AttachVolume',
+                        'ec2:DetachVolume',
+                    ],
+                    Resource = ['arn:aws:ec2:*:*:volume/*', 'arn:aws:ec2:*:*:instance/*' ]
+                ),
+                dict(
+                    Effect = "Allow",
+                    Action = [
+                        'ec2:DescribeVolumes',
+                        'ec2:DescribeVolumeAttribute',
+                        'ec2:DescribeVolumeStatus',
 
-                    'ec2:DescribeInstances',
-                    'ec2:ReportInstanceStatus'
-                ],
-                Resource = ['arn:aws:ec2:*:*:volume/*', 'arn:aws:ec2:*:*:instance/*' ]
-            )]
+                        'ec2:DescribeInstances',
+                        'ec2:ReportInstanceStatus'
+                    ],
+                    Resource = "*"
+                )
+            ]
         )
         
         role_arn = iam.create_role(RoleName = name, AssumeRolePolicyDocument = json.dumps(trust_relationship_policy_document))['Role']['Arn']
@@ -167,33 +175,40 @@ def micro(region, availability_zone, name, instance_type = 't3.micro', image_nam
     assert security_group and image and volume_cold and volume_hot
 
     init_script = '''#!/bin/bash -xe
+    exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
+
+    REGION=${REGION}
+    VOLUMEIDCOLD=${VOLUMEIDCOLD}
+    VOLUMEIDHOT=${VOLUMEIDHOT}
     INSTANCEID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
 
     sudo apt update
     sudo apt install -y awscli
 
-    aws ec2 attach-volume --region $REGION --device /dev/xvdd --instance-id $INSTANCEID --volume-id $VOLUMEIDCOLD
-    aws ec2 attach-volume --region $REGION --device /dev/xvde --instance-id $INSTANCEID --volume-id $VOLUMEIDHOT
-    aws ec2 wait volume-in-use --region $REGION --volume-ids $VOLUMEID1 $VOLUMEID2
+    aws ec2 attach-volume --region $REGION --device /dev/nvme1n1 --instance-id $INSTANCEID --volume-id $VOLUMEIDCOLD
+    aws ec2 attach-volume --region $REGION --device /dev/nvme2n1 --instance-id $INSTANCEID --volume-id $VOLUMEIDHOT
+    aws ec2 wait volume-in-use --region $REGION --volume-ids $VOLUMEIDCOLD $VOLUMEIDHOT
 
-    PATHCOLD=~/datasets
+    PATHCOLD=/home/ubuntu/datasets
     DEVCOLD=/dev/$(lsblk -o +SERIAL | grep ${VOLUMEIDCOLD/-/} | awk '{print $1}')
     [ "$(sudo file -b -s $DEVCOLD)" == "data" ] && sudo mkfs -t xfs $DEVCOLD
     mkdir $PATHCOLD
     sudo mount $DEVCOLD $PATHCOLD
-    sudo chown -R $USER $PATHCOLD
+    sudo chown -R ubuntu $PATHCOLD
 
-    PATHHOT~/experiments
+    PATHHOT=/home/ubuntu/experiments
     DEVHOT=/dev/$( lsblk -o +SERIAL | grep ${VOLUMEIDHOT/-/}  | awk '{print $1}')
     [ "$(sudo file -b -s $DEVHOT)" == "data" ] && sudo mkfs -t xfs $DEVHOT
     mkdir $PATHHOT
     sudo mount $DEVHOT $PATHHOT
-    sudo chown -R $USER $PATHHOT
+    sudo chown -R ubuntu $PATHHOT
+
+    touch /home/ubuntu/disksready
     
-    #aws ec2 detach-volume --region $REGION --device /dev/xvdd --instance-id $INSTANCEID --volume-id $VOLUMEIDCOLD
-    #aws ec2 detach-volume --region $REGION --device /dev/xvde --instance-id $INSTANCEID --volume-id $VOLUMEIDHOT
+    #aws ec2 detach-volume --region $REGION --device $DEVCOLD --instance-id $INSTANCEID --volume-id $VOLUMEIDCOLD
+    #aws ec2 detach-volume --region $REGION --device $DEVHOT --instance-id $INSTANCEID --volume-id $VOLUMEIDHOT
     
-    '''.replace('$REGION', region).replace('$VOLUMEIDCOLD', volume_cold['VolumeId']).replace('$VOLUMEIDHOT', volume_hot['VolumeId'])
+    '''.replace('${REGION}', region).replace('${VOLUMEIDCOLD}', volume_cold['VolumeId']).replace('${VOLUMEIDHOT}', volume_hot['VolumeId'])
 
     if shutdown_after_init_script:
         init_script += 'sudo shutdown'
@@ -210,7 +225,7 @@ def micro(region, availability_zone, name, instance_type = 't3.micro', image_nam
         NetworkInterfaces = [dict(DeviceIndex = 0, Groups = [security_group['GroupId']], SubnetId = subnet['SubnetId'], AssociatePublicIpAddress = True)], 
         TagSpecifications = TagSpecifications('instance', name = name, suffix = 'micro'),
         IamInstanceProfile = dict(Name = name), 
-        #UserData = init_script,
+        UserData = init_script,
     )['Instances'][0]
     print(instance)
     print('- instance is', instance['InstanceId'])
@@ -271,11 +286,13 @@ def ssh(region, name, root, instance_id = None, username = 'ubuntu'):
     instance = {}
     if not instance_id:
         running_instances = [instance for reservation in ec2.describe_instances(Filters = [dict(Name = 'instance-state-name', Values = ['running'] ), dict(Name = 'tag:Name', Values = [N(name = name) + '_*'])]) ['Reservations'] for instance in reservation['Instances']]
+
         if len(running_instances) == 1:
             instance = running_instances[0]
         else:
-            print('- running instances:', len(running_instances), ' > 1. cant autpselect.')
+            print('- running instances:', len(running_instances), ', cant autoselect.')
             print(running_instances)
+            return
     else:
         instance = ([instance for reservation in ec2.describe_instances(InstanceIds = [instance_id])['Reservations'] for instance in reservation['Instances']] + empty )[0]
     
@@ -286,8 +303,8 @@ def ssh(region, name, root, instance_id = None, username = 'ubuntu'):
     print('- ip is', public_ip)
     assert public_ip
 
-    cmd = ['ssh', '-i', os.path.join(root, name + '.pem'), f'{username}@{public_ip}']
-    print(' '.join(cmd))
+    cmd = ['ssh', '-o', 'StrictHostKeyChecking no', '-i', os.path.join(root, name + '.pem'), f'{username}@{public_ip}']
+    print(' '.join(c if ' ' not in c else f'"{c}"' for c in cmd))
     print()
 
     subprocess.call(['chmod', '600', os.path.join(root, name + '.pem')])
@@ -326,7 +343,7 @@ if __name__ == '__main__':
     parser.add_argument('--availability-zone', default = 'us-east-1a')
     parser.add_argument('--cold-disk-size-gb', type = int, default = 50)
     parser.add_argument('--hot-disk-size-gb', type = int, default = 50)
-    parser.add_argument('--name', default = 'poehalitest49')
+    parser.add_argument('--name', default = 'poehalitest54')
     parser.add_argument('--root', default = '~')
     parser.add_argument('--vpc-id')
     parser.add_argument('--subnet-id')
