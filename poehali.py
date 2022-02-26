@@ -17,27 +17,37 @@ def TagSpecifications(resource, name = '', suffix = ''):
     return [dict(ResourceType = resource, Tags = [dict(Key = 'Name', Value = N(name = name, suffix = suffix)  )])] 
 
 def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None, cold_disk_size_gb = 200, hot_disk_size_gb = 200, cidr_vpc = '192.168.0.0/16', cidr_public_internet = '0.0.0.0/0', iops = 100):
+    print('- region is', region)
+    print('- availability zone is', availability_zone)
+    
     root = os.path.expanduser(os.path.join(root, '.' + po))
     os.makedirs(root, exist_ok = True)
+    print('- root at', root)
+
     ec2 = boto3.client('ec2', region_name = region)
     iam = boto3.client('iam', region_name = region)
 
-    if not os.path.exists(os.path.join(root, name + '.pem')):
+    key_path = os.path.join(root, name + '.pem')
+    if not os.path.exists(key_path):
+        print('- key does not exist, creating')
         try:
             key_pair = ec2.create_key_pair(KeyName = name)
         except botocore.exceptions.ClientError as err:
             if err.response['Error']['Code'] == 'InvalidKeyPair.Duplicate':
                 key_pair = ec2.create_key_pair(KeyName = name + '_' + ''.join(random.choices(string.ascii_uppercase, k = 4)))
 
-        with open(os.path.join(root, name + '.pem'), 'w') as f:
+        with open(key_path, 'w') as f:
             f.write(key_pair['KeyMaterial'])
         
         #os.chmod(os.path.join(root, name + '.pem'), 600)
         subprocess.call(['chmod', '600', os.path.join(root, name + '.pem')])
 
+    print('- key at', key_path)
+
     if not vpc_id:
         vpc = (ec2.describe_vpcs(Filters = [dict(Name = 'tag:Name', Values = [po + '*'])])['Vpcs'] + [None])[0]
         if not vpc:
+            print('- vpc not found, creating')
             try:
                 vpc = ec2.create_default_vpc()['Vpc']
             except botocore.exceptions.ClientError as err:
@@ -48,35 +58,48 @@ def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None
             
         security_group = (ec2.describe_security_groups(Filters = [dict(Name = 'vpc-id', Values = [vpc_id]), dict(Name = 'group-name', Values = [name])])['SecurityGroups'] + [None])[0]
         if not security_group:
+            print('- security group not found, creating')
             security_group = ec2.create_security_group(GroupName = name, Description = name, VpcId = vpc_id, TagSpecifications = TagSpecifications('security-group'))
             ec2.authorize_security_group_ingress(GroupId = security_group['GroupId'], IpPermissions = [dict(IpProtocol = 'tcp', FromPort = 22, ToPort = 22, IpRanges = [dict(CidrIp = cidr_public_internet)])])
+            print('- security group is', security_group['SecurityGroup']['SecurityGroupId'])
+    print('- vpc is', vpc_id)
 
     internet_gateway = (ec2.describe_internet_gateways(Filters = [dict(Name = 'attachment.vpc-id', Values = [vpc_id])])['InternetGateways'] + [None])[0]
     if not internet_gateway:
+        print('- internet gateway not found, creating')
         internet_gateway = ec2.create_internet_gateway(TagSpecifications = TagSpecifications('internet-gateway'))['InternetGateway']
         ec2.attach_internet_gateway(InternetGatewayId = internet_gateway['InternetGatewayId'], VpcId = vpc_id)
+    print('- internet gateway is', internet_gateway['InternetGatewayId'])
 
     if not subnet_id:
         subnet = (ec2.describe_subnets(Filters = [dict(Name = 'availability-zone', Values = [availability_zone]), dict(Name = 'tag:Name', Values = [po + '*'])])['Subnets'] + [None])[0]
         if not subnet:
-            subnet_id = ec2.create_subnet(VpcId = vpc_id, AvailabilityZone = availability_zone, CidrBlock = cidr_vpc, TagSpecifications = TagSpecifications('subnet'))['Subnet']['SubnetId']
-            route_table_id = ec2.describe_route_tables(Filters = [dict(Name = 'association.subnet-id', Values = [subnet_id])])['RouteTables'][0]['Associations'][0]['RouteTableId']
-            ec2.create_route(DestinationCidrBlock = cidr_public_internet, GatewayId = internet_gateway_id, RouteTableId = route_table_id)
+            print('- subnet not found, creating')
+            subnet = ec2.create_subnet(VpcId = vpc_id, AvailabilityZone = availability_zone, CidrBlock = cidr_vpc, TagSpecifications = TagSpecifications('subnet'))['Subnet']
+            route_table_id = ec2.describe_route_tables(Filters = [dict(Name = 'association.subnet-id', Values = [subnet['SubnetId']])])['RouteTables'][0]['Associations'][0]['RouteTableId']
+            print('- route table is', route_table_id)
+            ec2.create_route(DestinationCidrBlock = cidr_public_internet, GatewayId = internet_gateway['InternetGatewayId'], RouteTableId = route_table_id)
+        subnet_id = subnet['SubnetId']
+    print('- subnet is', subnet_id)
 
     cold_disk = (ec2.describe_volumes(Filters = [dict(Name = 'tag:Name', Values = [N(name = name, suffix = 'datasets')])])['Volumes'] + [None])[0]
     if not cold_disk:
+        print('- cold disk not found, creating', cold_disk_size_gb, 'gb')
         ec2.create_volume(VolumeType = 'io1', MultiAttachEnabled = True, AvailabilityZone = availability_zone, Size = cold_disk_size_gb, Iops = iops, TagSpecifications = TagSpecifications('volume', name = name, suffix = 'datasets'))
+    print('- cold disk is', cold_disk['VolumeId'])
     
     hot_disk = (ec2.describe_volumes(Filters = [dict(Name = 'tag:Name', Values = [N(name = name, suffix = 'experiments')])])['Volumes'] + [None])[0]
     if not hot_disk:
+        print('- hot disk not found, creating', hot_disk_size_gb, 'gb')
         ec2.create_volume(VolumeType = 'io1', MultiAttachEnabled = True, AvailabilityZone = availability_zone, Size = hot_disk_size_gb, Iops = iops, TagSpecifications = TagSpecifications('volume', name = name, suffix = 'experiments'))
+    print('- hot disk is', hot_disk['VolumeId'])
 
     #policy_arn = [p for p in iam.list_policies(Scope = 'AWS', PathPrefix = '/service-role/')['Policies'] if p['PolicyName'] == 'AmazonEC2RoleforSSM'][0]['Arn']
 
     try:
-        iam.get_instance_profile(InstanceProfileName = name)
+        instance_profile = iam.get_instance_profile(InstanceProfileName = name)
     except iam.exceptions.NoSuchEntityException:
-        
+        print('- instance profile not found, creating') 
         trust_relationship_policy_document = dict(
             Version = '2012-10-17',
             Statement = dict(
@@ -98,11 +121,14 @@ def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None
             )]
         )
         
-        iam.create_role(RoleName = name, AssumeRolePolicyDocument = json.dumps(trust_relationship_policy_document))
+        role_arn = iam.create_role(RoleName = name, AssumeRolePolicyDocument = json.dumps(trust_relationship_policy_document))['Role']['Arn']
+        print('- role is', role_arn)
         policy_arn = iam.create_policy(PolicyName = name, PolicyDocument = json.dumps(policy_document))['Policy']['Arn']
+        print('- policy is', policy_arn)
         iam.attach_role_policy(RoleName = name, PolicyArn = policy_arn)
-        iam.create_instance_profile(InstanceProfileName = name)
+        instance_profile = iam.create_instance_profile(InstanceProfileName = name)
         iam.add_role_to_instance_profile(InstanceProfileName = name, RoleName = name)
+    print('- instance profile is', instance_profile['InstanceProfile']['Arn'])
 
 def micro(region, availability_zone, name, instance_type = 't3.micro', image_name = 'ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-20210430', shutdown_after_init_script = False):
     ec2 = boto3.client('ec2', region_name = region)
