@@ -321,21 +321,41 @@ def help(region):
 def datasets(name, root, region, availability_zone):
     micro(region, availability_zone, name, shutdown_after_init_script = True)
 
+def rmall(region, name):
+    print('- name is', name)
+    print('- region is', region)
+    ec2 = boto3.client('ec2', region_name = region)
+    
+    volume_ids_deleting, volume_ids_other = [], []
+
+    volumes = ec2.describe_volumes()['Volumes']
+    for volume in volumes:
+        volume_name = ([tag['Value'] for tag in volume.get('Tags', []) if tag['Key'] == 'Name'] + ['NoName'])[0]
+        if (name and volume_name.startswith(po + '_' + name)) or (not name and volume_name.startswith(po)):
+            if volume['State'] == 'available':
+                volume_ids_deleting.append(volume['VolumeId'])
+                ec2.delete_volume(VolumeId = volume['VolumeId'])
+            else:
+                volume_ids_other.append(volume['VolumeId'])
+
+    print('- volumes deleting:', volume_ids_deleting)
+    print('- volumes other:', volume_ids_other)
+            
+
 def ls(region, name):
+    print('- name is', name)
+    print('- region is', region)
     ec2 = boto3.client('ec2', region_name = region)
     
     volumes = ec2.describe_volumes()['Volumes']
     for volume in volumes:
-        name = ([tag['Value'] for tag in volume.get('Tags', []) if tag['Key'] == 'Name'] + ['NoName'])[0]
+        volume_name = ([tag['Value'] for tag in volume.get('Tags', []) if tag['Key'] == 'Name'] + ['NoName'])[0]
         availability_zone = volume['AvailabilityZone']
         state = volume['State']
         volume_id = volume['VolumeId']
         size = volume['Size']
 
         print(f'[{name} := {volume_id} @ {availability_zone}]: {size} Gb, {state}')
-
-    if not volumes:
-        print(f'No volumes @ {region}')
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -348,7 +368,7 @@ if __name__ == '__main__':
     parser.add_argument('--vpc-id')
     parser.add_argument('--subnet-id')
     parser.add_argument('--instance-id')
-    parser.add_argument('cmd', choices = ['help', 'ps', 'ls', 'kill', 'killall', 'ssh', 'setup', 'micro', 'datasets'])
+    parser.add_argument('cmd', choices = ['help', 'ps', 'ls', 'kill', 'killall', 'rmall', 'ssh', 'setup', 'micro', 'datasets'])
     args = parser.parse_args()
     
     if args.cmd == 'help':
@@ -365,6 +385,9 @@ if __name__ == '__main__':
     
     if args.cmd == 'ls':
         ls(region = args.region, name = args.name)
+    
+    if args.cmd == 'rmall':
+        rmall(region = args.region, name = args.name)
     
     if args.cmd == 'ssh':
         ssh(region = args.region, name = args.name, root = args.root, instance_id = args.instance_id)
