@@ -275,7 +275,7 @@ def killall(region, name = None):
     ec2.terminate_instances(InstanceIds = instance_ids)
     print('- instances terminating', instance_ids)
 
-def ssh(region, name, root, instance_id = None, username = 'ubuntu'):
+def ssh(region, name, root, instance_id = None, username = 'ubuntu', scp = False):
     root = os.path.expanduser(os.path.join(root, '.' + po))
     print('- name is', name)
     print('- region is', region)
@@ -302,28 +302,13 @@ def ssh(region, name, root, instance_id = None, username = 'ubuntu'):
     print('- ip is', public_ip)
     assert public_ip
 
-    cmd = ['ssh', '-o', 'StrictHostKeyChecking=no', '-i', os.path.join(root, name + '.pem'), f'{username}@{public_ip}']
+    cmd = ['ssh' if not scp else 'scp', '-o', 'StrictHostKeyChecking=no', '-i', os.path.join(root, name + '.pem'), f'{username}@{public_ip}']
     print(' '.join(c if ' ' not in c else f'"{c}"' for c in cmd))
     print()
 
-    subprocess.call(['chmod', '600', os.path.join(root, name + '.pem')])
-    subprocess.call(cmd)
-
-def scp(region, name, root, instance_id):
-    root = os.path.expanduser(os.path.join(root, '.' + po))
-    print('- name is', name)
-    print('- region is', region)
-    print('- root is', root)
-        
-    ec2 = boto3.client('ec2', region_name = region)
-    instance = ([instance for reservation in ec2.describe_instances(InstanceIds = [instance_id])['Reservations'] for instance in reservation['Instances']] + empty )[0]
-    
-    print('- instance is', instance.get('InstanceId'))
-    assert instance
-
-    cmd = ['ssh', '-o', 'StrictHostKeyChecking=no', '-i', os.path.join(root, name + '.pem'), f'{username}@{public_ip}']
-    print(' '.join(c if ' ' not in c else f'"{c}"' for c in cmd))
-    print()
+    if not scp:
+        subprocess.call(['chmod', '600', os.path.join(root, name + '.pem')])
+        subprocess.call(cmd)
 
 def help(region):
     print(f'https://console.aws.amazon.com/iam/home?region={region}')
@@ -406,6 +391,9 @@ if __name__ == '__main__':
     
     if args.cmd == 'ssh':
         ssh(region = args.region, name = args.name, root = args.root, instance_id = args.instance_id)
+    
+    if args.cmd == 'scp':
+        ssh(region = args.region, name = args.name, root = args.root, instance_id = args.instance_id, scp = True)
 
     if args.cmd == 'setup':
         setup(name = args.name, region = args.region, root = args.root, availability_zone = args.availability_zone, vpc_id = args.vpc_id, cold_disk_size_gb = args.cold_disk_size_gb, hot_disk_size_gb = args.hot_disk_size_gb)
