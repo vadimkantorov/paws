@@ -9,6 +9,7 @@ import botocore
 import boto3
 
 po = 'poehali'
+empty = [{}]
 
 def N(name = '', resource = '', suffix = ''):
     return po + ('_' + name if name else '') + ('_' + resource if resource else '') + ('_' + suffix if suffix else '')
@@ -47,7 +48,7 @@ def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None
     print('- key at', key_path)
 
     if not vpc_id:
-        vpc = (ec2.describe_vpcs(Filters = [dict(Name = 'tag:Name', Values = [po + '*'])])['Vpcs'] + [None])[0]
+        vpc = (ec2.describe_vpcs(Filters = [dict(Name = 'tag:Name', Values = [po + '*'])])['Vpcs'] + empty)[0]
         if not vpc:
             print('- vpc not found, creating')
             try:
@@ -58,7 +59,7 @@ def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None
                 vpc = ec2.create_vpc(CidrBlock = cidr_vpc, InstanceTenancy='default', TagSpecifications = TagSpecifications('vpc'))['Vpc']
         vpc_id = vpc['VpcId']
             
-        security_group = (ec2.describe_security_groups(Filters = [dict(Name = 'vpc-id', Values = [vpc_id]), dict(Name = 'group-name', Values = [name])])['SecurityGroups'] + [None])[0]
+        security_group = (ec2.describe_security_groups(Filters = [dict(Name = 'vpc-id', Values = [vpc_id]), dict(Name = 'group-name', Values = [name])])['SecurityGroups'] + empty)[0]
         if not security_group:
             print('- security group not found, creating')
             security_group = ec2.create_security_group(GroupName = name, Description = name, VpcId = vpc_id, TagSpecifications = TagSpecifications('security-group'))
@@ -66,7 +67,7 @@ def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None
             print('- security group is', security_group['GroupId'])
     print('- vpc is', vpc_id)
 
-    internet_gateway = (ec2.describe_internet_gateways(Filters = [dict(Name = 'attachment.vpc-id', Values = [vpc_id])])['InternetGateways'] + [None])[0]
+    internet_gateway = (ec2.describe_internet_gateways(Filters = [dict(Name = 'attachment.vpc-id', Values = [vpc_id])])['InternetGateways'] + empty)[0]
     if not internet_gateway:
         print('- internet gateway not found, creating')
         internet_gateway = ec2.create_internet_gateway(TagSpecifications = TagSpecifications('internet-gateway'))['InternetGateway']
@@ -74,7 +75,7 @@ def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None
     print('- internet gateway is', internet_gateway['InternetGatewayId'])
 
     if not subnet_id:
-        subnet = (ec2.describe_subnets(Filters = [dict(Name = 'availability-zone', Values = [availability_zone]), dict(Name = 'tag:Name', Values = [po + '*'])])['Subnets'] + [None])[0]
+        subnet = (ec2.describe_subnets(Filters = [dict(Name = 'availability-zone', Values = [availability_zone]), dict(Name = 'tag:Name', Values = [po + '*'])])['Subnets'] + empty)[0]
         if not subnet:
             print('- subnet not found, creating')
             subnet = ec2.create_subnet(VpcId = vpc_id, AvailabilityZone = availability_zone, CidrBlock = cidr_vpc, TagSpecifications = TagSpecifications('subnet'))['Subnet']
@@ -84,7 +85,7 @@ def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None
         subnet_id = subnet['SubnetId']
     print('- subnet is', subnet_id)
 
-    cold_disk = (ec2.describe_volumes(Filters = [dict(Name = 'tag:Name', Values = [N(name = name, suffix = 'datasets')])])['Volumes'] + [None])[0]
+    cold_disk = (ec2.describe_volumes(Filters = [dict(Name = 'tag:Name', Values = [N(name = name, suffix = 'datasets')])])['Volumes'] + empty)[0]
     if not cold_disk:
         print('- cold disk not found, creating', cold_disk_size_gb, 'gb')
         cold_disk = ec2.create_volume(VolumeType = 'io1', MultiAttachEnabled = True, AvailabilityZone = availability_zone, Size = cold_disk_size_gb, Iops = iops, TagSpecifications = TagSpecifications('volume', name = name, suffix = 'datasets'))
@@ -154,7 +155,6 @@ def micro(region, availability_zone, name, instance_type = 't3.micro', image_nam
     print('- image name is', image_name)
     
     ec2 = boto3.client('ec2', region_name = region)
-    empty = [{}]
     
     vpc = (ec2.describe_vpcs(Filters = [dict(Name = 'tag:Name', Values = [po + '*'])])['Vpcs'] + empty)[0]
     subnet = (ec2.describe_subnets(Filters = [dict(Name = 'availability-zone', Values = [availability_zone]), dict(Name = 'tag:Name', Values = [po + '*'])])['Subnets'] + empty)[0]
@@ -281,7 +281,6 @@ def ssh(region, name, root, instance_id = None, username = 'ubuntu'):
     print('- region is', region)
     print('- root is', root)
     ec2 = boto3.client('ec2', region_name = region)
-    empty = [{}]
     
     instance = {}
     if not instance_id:
@@ -303,12 +302,28 @@ def ssh(region, name, root, instance_id = None, username = 'ubuntu'):
     print('- ip is', public_ip)
     assert public_ip
 
-    cmd = ['ssh', '-o', 'StrictHostKeyChecking no', '-i', os.path.join(root, name + '.pem'), f'{username}@{public_ip}']
+    cmd = ['ssh', '-o', 'StrictHostKeyChecking=no', '-i', os.path.join(root, name + '.pem'), f'{username}@{public_ip}']
     print(' '.join(c if ' ' not in c else f'"{c}"' for c in cmd))
     print()
 
     subprocess.call(['chmod', '600', os.path.join(root, name + '.pem')])
     subprocess.call(cmd)
+
+def scp(region, name, root, instance_id):
+    root = os.path.expanduser(os.path.join(root, '.' + po))
+    print('- name is', name)
+    print('- region is', region)
+    print('- root is', root)
+        
+    ec2 = boto3.client('ec2', region_name = region)
+    instance = ([instance for reservation in ec2.describe_instances(InstanceIds = [instance_id])['Reservations'] for instance in reservation['Instances']] + empty )[0]
+    
+    print('- instance is', instance.get('InstanceId'))
+    assert instance
+
+    cmd = ['ssh', '-o', 'StrictHostKeyChecking=no', '-i', os.path.join(root, name + '.pem'), f'{username}@{public_ip}']
+    print(' '.join(c if ' ' not in c else f'"{c}"' for c in cmd))
+    print()
 
 def help(region):
     print(f'https://console.aws.amazon.com/iam/home?region={region}')
