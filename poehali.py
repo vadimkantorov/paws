@@ -17,15 +17,17 @@ def TagSpecifications(resource, name = '', suffix = ''):
     return [dict(ResourceType = resource, Tags = [dict(Key = 'Name', Value = N(name = name, suffix = suffix)  )])] 
 
 def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None, cold_disk_size_gb = 200, hot_disk_size_gb = 200, cidr_vpc = '192.168.0.0/16', cidr_public_internet = '0.0.0.0/0', iops = 100):
+    root = os.path.expanduser(os.path.join(root, '.' + po))
+    print('- name is', name)
     print('- region is', region)
     print('- availability zone is', availability_zone)
+    print('- root is', root)
     
-    root = os.path.expanduser(os.path.join(root, '.' + po))
     os.makedirs(root, exist_ok = True)
-    print('- root at', root)
 
     ec2 = boto3.client('ec2', region_name = region)
     iam = boto3.client('iam', region_name = region)
+    empty = [{}]
 
     key_path = os.path.join(root, name + '.pem')
     if not os.path.exists(key_path):
@@ -61,7 +63,7 @@ def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None
             print('- security group not found, creating')
             security_group = ec2.create_security_group(GroupName = name, Description = name, VpcId = vpc_id, TagSpecifications = TagSpecifications('security-group'))
             ec2.authorize_security_group_ingress(GroupId = security_group['GroupId'], IpPermissions = [dict(IpProtocol = 'tcp', FromPort = 22, ToPort = 22, IpRanges = [dict(CidrIp = cidr_public_internet)])])
-            print('- security group is', security_group['SecurityGroup']['SecurityGroupId'])
+            print('- security group is', security_group['GroupId'])
     print('- vpc is', vpc_id)
 
     internet_gateway = (ec2.describe_internet_gateways(Filters = [dict(Name = 'attachment.vpc-id', Values = [vpc_id])])['InternetGateways'] + [None])[0]
@@ -85,13 +87,13 @@ def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None
     cold_disk = (ec2.describe_volumes(Filters = [dict(Name = 'tag:Name', Values = [N(name = name, suffix = 'datasets')])])['Volumes'] + [None])[0]
     if not cold_disk:
         print('- cold disk not found, creating', cold_disk_size_gb, 'gb')
-        ec2.create_volume(VolumeType = 'io1', MultiAttachEnabled = True, AvailabilityZone = availability_zone, Size = cold_disk_size_gb, Iops = iops, TagSpecifications = TagSpecifications('volume', name = name, suffix = 'datasets'))
+        cold_disk = ec2.create_volume(VolumeType = 'io1', MultiAttachEnabled = True, AvailabilityZone = availability_zone, Size = cold_disk_size_gb, Iops = iops, TagSpecifications = TagSpecifications('volume', name = name, suffix = 'datasets'))
     print('- cold disk is', cold_disk['VolumeId'])
     
     hot_disk = (ec2.describe_volumes(Filters = [dict(Name = 'tag:Name', Values = [N(name = name, suffix = 'experiments')])])['Volumes'] + [None])[0]
     if not hot_disk:
         print('- hot disk not found, creating', hot_disk_size_gb, 'gb')
-        ec2.create_volume(VolumeType = 'io1', MultiAttachEnabled = True, AvailabilityZone = availability_zone, Size = hot_disk_size_gb, Iops = iops, TagSpecifications = TagSpecifications('volume', name = name, suffix = 'experiments'))
+        hot_disk = ec2.create_volume(VolumeType = 'io1', MultiAttachEnabled = True, AvailabilityZone = availability_zone, Size = hot_disk_size_gb, Iops = iops, TagSpecifications = TagSpecifications('volume', name = name, suffix = 'experiments'))
     print('- hot disk is', hot_disk['VolumeId'])
 
     #policy_arn = [p for p in iam.list_policies(Scope = 'AWS', PathPrefix = '/service-role/')['Policies'] if p['PolicyName'] == 'AmazonEC2RoleforSSM'][0]['Arn']
@@ -115,7 +117,13 @@ def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None
                 Effect = 'Allow',
                 Action = [
                     'ec2:AttachVolume',
-                    'ec2:DetachVolume'
+                    'ec2:DetachVolume',
+                    'ec2:DescribeVolumes',
+                    'ec2:DescribeVolumeAttribute',
+                    'ec2:DescribeVolumeStatus',
+
+                    'ec2:DescribeInstances',
+                    'ec2:ReportInstanceStatus'
                 ],
                 Resource = ['arn:aws:ec2:*:*:volume/*', 'arn:aws:ec2:*:*:instance/*' ]
             )]
@@ -131,17 +139,32 @@ def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None
     print('- instance profile is', instance_profile['InstanceProfile']['Arn'])
 
 def micro(region, availability_zone, name, instance_type = 't3.micro', image_name = 'ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-20210430', shutdown_after_init_script = False):
+    print('- name is', name)
+    print('- region is', region)
+    print('- availability zone is', availability_zone)
+    print('- instance type is', instance_type)
+    print('- image name is', image_name)
+    
     ec2 = boto3.client('ec2', region_name = region)
+    empty = [{}]
+    
+    vpc = (ec2.describe_vpcs(Filters = [dict(Name = 'tag:Name', Values = [po + '*'])])['Vpcs'] + empty)[0]
+    subnet = (ec2.describe_subnets(Filters = [dict(Name = 'availability-zone', Values = [availability_zone]), dict(Name = 'tag:Name', Values = [po + '*'])])['Subnets'] + empty)[0]
+    
+    print('- vpc is', vpc.get('VpcId'))
+    print('- subnet is', subnet.get('SubnetId'))
+    assert vpc and subnet
+    
+    security_group = (ec2.describe_security_groups(Filters = [dict(Name = 'vpc-id', Values = [vpc['VpcId']]), dict(Name = 'group-name', Values = [name])])['SecurityGroups'] + empty)[0]
+    image = (ec2.describe_images(Filters = [dict(Name = 'name', Values = [image_name])])['Images'] + empty)[0]
+    volume_cold = (ec2.describe_volumes(Filters = [dict(Name = 'tag:Name', Values = [N(name, 'datasets')])])['Volumes'] + empty)[0]
+    volume_hot = (ec2.describe_volumes(Filters = [dict(Name = 'tag:Name', Values = [N(name, 'experiments')])])['Volumes'] + empty)[0]
 
-    vpc = (ec2.describe_vpcs(Filters = [dict(Name = 'tag:Name', Values = [po + '*'])])['Vpcs'] + [None])[0]
-    subnet = (ec2.describe_subnets(Filters = [dict(Name = 'availability-zone', Values = [availability_zone]), dict(Name = 'tag:Name', Values = [po + '*'])])['Subnets'] + [None])[0]
-    security_group = (ec2.describe_security_groups(Filters = [dict(Name = 'vpc-id', Values = [vpc['VpcId']]), dict(Name = 'group-name', Values = [name])])['SecurityGroups'] + [None])[0]
-    
-    image_id = ec2.describe_images(Filters = [dict(Name = 'name', Values = [image_name])])['Images'][0]['ImageId']
-    
-    volume_id_datasets = ec2.describe_volumes(Filters = [dict(Name = 'tag:Name', Values = [N(name, 'datasets')])])['Volumes'][0]['VolumeId']
-    
-    volume_id_experiments = ec2.describe_volumes(Filters = [dict(Name = 'tag:Name', Values = [N(name, 'experiments')])])['Volumes'][0]['VolumeId']
+    print('- security group is', security_group.get('GroupId'))
+    print('- image is', image.get('ImageId'))
+    print('- volume cold is', volume_cold.get('VolumeId'))
+    print('- volume hot is', volume_hot.get('VolumeId'))
+    assert security_group and image and volume_cold and volume_hot
 
     init_script = '''#!/bin/bash -xe
     INSTANCEID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
@@ -149,30 +172,37 @@ def micro(region, availability_zone, name, instance_type = 't3.micro', image_nam
     sudo apt update
     sudo apt install -y awscli
 
-    aws ec2 attach-volume --region $REGION --device /dev/xvdd --instance-id $INSTANCEID --volume-id $VOLUMEID1
-    aws ec2 attach-volume --region $REGION --device /dev/xvde --instance-id $INSTANCEID --volume-id $VOLUMEID2
-    
-    aws ec2 wait volume-in-use --volume-ids $VOLUMEID1 $VOLUMEID2
-    
-    #aws ec2 detach-volume --region $REGION --device /dev/xvdd --instance-id $INSTANCEID --volume-id $VOLUMEID1
-    #aws ec2 detach-volume --region $REGION --device /dev/xvde --instance-id $INSTANCEID --volume-id $VOLUMEID2
-    
-    '''.replace('$REGION', region).replace('$VOLUMEID1', volume_id_datasets).replace('$VOLUMEID2', volume_id_experiments)
+    aws ec2 attach-volume --region $REGION --device /dev/xvdd --instance-id $INSTANCEID --volume-id $VOLUMEIDCOLD
+    aws ec2 attach-volume --region $REGION --device /dev/xvde --instance-id $INSTANCEID --volume-id $VOLUMEIDHOT
+    aws ec2 wait volume-in-use --region $REGION --volume-ids $VOLUMEID1 $VOLUMEID2
 
-    #[ "$(file -b -s /dev/xvdd)" == "data" ] && mkfs -t xfs /dev/xvdd
-    #[ "$(file -b -s /dev/xvde)" == "data" ] && mkfs -t xfs /dev/xvde
+    PATHCOLD=~/datasets
+    DEVCOLD=/dev/$(lsblk -o +SERIAL | grep ${VOLUMEIDCOLD/-/} | awk '{print $1}')
+    [ "$(sudo file -b -s $DEVCOLD)" == "data" ] && sudo mkfs -t xfs $DEVCOLD
+    mkdir $PATHCOLD
+    sudo mount $DEVCOLD $PATHCOLD
+    sudo chown -R $USER $PATHCOLD
+
+    PATHHOT~/experiments
+    DEVHOT=/dev/$( lsblk -o +SERIAL | grep ${VOLUMEIDHOT/-/}  | awk '{print $1}')
+    [ "$(sudo file -b -s $DEVHOT)" == "data" ] && sudo mkfs -t xfs $DEVHOT
+    mkdir $PATHHOT
+    sudo mount $DEVHOT $PATHHOT
+    sudo chown -R $USER $PATHHOT
     
-    #mkdir ~/datasets ~/experiments
-    #sudo mount /dev/xvdd ~/datasets
-    #sudo mount /dev/xvde ~/experiments
-    #sudo umount /dev/xvdd /dev/xvde
+    #aws ec2 detach-volume --region $REGION --device /dev/xvdd --instance-id $INSTANCEID --volume-id $VOLUMEIDCOLD
+    #aws ec2 detach-volume --region $REGION --device /dev/xvde --instance-id $INSTANCEID --volume-id $VOLUMEIDHOT
+    
+    '''.replace('$REGION', region).replace('$VOLUMEIDCOLD', volume_cold['VolumeId']).replace('$VOLUMEIDHOT', volume_hot['VolumeId'])
 
     if shutdown_after_init_script:
         init_script += 'sudo shutdown'
 
+    print(init_script)
+    
     instance = ec2.run_instances(
         InstanceType = instance_type, 
-        ImageId = image_id, 
+        ImageId = image['ImageId'], 
         MinCount = 1, 
         MaxCount = 1, 
         KeyName = name, 
@@ -180,15 +210,22 @@ def micro(region, availability_zone, name, instance_type = 't3.micro', image_nam
         NetworkInterfaces = [dict(DeviceIndex = 0, Groups = [security_group['GroupId']], SubnetId = subnet['SubnetId'], AssociatePublicIpAddress = True)], 
         TagSpecifications = TagSpecifications('instance', name = name, suffix = 'micro'),
         IamInstanceProfile = dict(Name = name), 
-        UserData = init_script,
-    )
-    print('Instance launched', instance['Instance']['InstanceId'])
+        #UserData = init_script,
+    )['Instances'][0]
+    print(instance)
+    print('- instance is', instance['InstanceId'])
 
 def gpu(name, root, region, availability_zone):
     pass
 
 def ps(region, name, root):
     root = os.path.expanduser(os.path.join(root, '.' + po))
+    print('- name is', name)
+    print('- region is', region)
+    print('- root is', root)
+    print()
+    
+    os.makedirs(root, exist_ok = True)
     ec2 = boto3.client('ec2', region_name = region)
     
     instances = [instance for reservation in ec2.describe_instances()['Reservations'] for instance in reservation['Instances']]
@@ -215,25 +252,39 @@ def kill(region, instance_id):
     print(ec2.terminate_instances(InstanceIds = [instance_id]))
     
 def killall(region, name = None):
+    print('- name is', name)
+    print('- region is', region)
     ec2 = boto3.client('ec2', region_name = region)
-    instances = [instance for reservation in ec2.describe_instances(Filters = [dict(Name = 'instance-state-name', Values = ['running'] ), dict(Name = 'tag:Name', Values = [N(name = name) + '_*'])]) ['Reservations'] for instance in reservation['Instances']]
-    instance_ids = [instance['InstanceId'] for instance in instances]
+    running_instances = [instance for reservation in ec2.describe_instances(Filters = [dict(Name = 'instance-state-name', Values = ['running'] ), dict(Name = 'tag:Name', Values = [N(name = name) + '_*'])]) ['Reservations'] for instance in reservation['Instances']]
+    instance_ids = [instance['InstanceId'] for instance in running_instances]
     ec2.terminate_instances(InstanceIds = instance_ids)
-    print('Terminated', instance_ids)
+    print('- instances terminating', instance_ids)
 
-def ssh(region, name, root, instance_id, username = 'ubuntu'):
+def ssh(region, name, root, instance_id = None, username = 'ubuntu'):
     root = os.path.expanduser(os.path.join(root, '.' + po))
+    print('- name is', name)
+    print('- region is', region)
+    print('- root is', root)
     ec2 = boto3.client('ec2', region_name = region)
-
-    instance = ([instance for reservation in ec2.describe_instances(InstanceIds = [instance_id])['Reservations'] for instance in reservation['Instances']] + [None])[0]
-    if not instance:
-        print('Instance [', instance_id, '] not found')
-        return
+    empty = [{}]
+    
+    instance = {}
+    if not instance_id:
+        running_instances = [instance for reservation in ec2.describe_instances(Filters = [dict(Name = 'instance-state-name', Values = ['running'] ), dict(Name = 'tag:Name', Values = [N(name = name) + '_*'])]) ['Reservations'] for instance in reservation['Instances']]
+        if len(running_instances) == 1:
+            instance = running_instances[0]
+        else:
+            print('- running instances:', len(running_instances), ' > 1. cant autpselect.')
+            print(running_instances)
+    else:
+        instance = ([instance for reservation in ec2.describe_instances(InstanceIds = [instance_id])['Reservations'] for instance in reservation['Instances']] + empty )[0]
+    
+    print('- instance is', instance.get('InstanceId'))
+    assert instance
     
     public_ip = instance.get('PublicIpAddress')
-    if not public_ip:
-        print('Instance [', instance_id, '] does not have public IP')
-        return
+    print('- ip is', public_ip)
+    assert public_ip
 
     cmd = ['ssh', '-i', os.path.join(root, name + '.pem'), f'{username}@{public_ip}']
     print(' '.join(cmd))
@@ -243,6 +294,7 @@ def ssh(region, name, root, instance_id, username = 'ubuntu'):
     subprocess.call(cmd)
 
 def help(region):
+    print(f'https://console.aws.amazon.com/iam/home?region={region}')
     print(f'https://console.aws.amazon.com/vpc/home?region={region}#vpcs')
     print(f'https://console.aws.amazon.com/vpc/home?region={region}#subnets')
     print(f'https://console.aws.amazon.com/ec2/v2/home?region={region}#KeyPairs')
@@ -274,7 +326,7 @@ if __name__ == '__main__':
     parser.add_argument('--availability-zone', default = 'us-east-1a')
     parser.add_argument('--cold-disk-size-gb', type = int, default = 50)
     parser.add_argument('--hot-disk-size-gb', type = int, default = 50)
-    parser.add_argument('--name', default = 'poehalitest44')
+    parser.add_argument('--name', default = 'poehalitest49')
     parser.add_argument('--root', default = '~')
     parser.add_argument('--vpc-id')
     parser.add_argument('--subnet-id')
