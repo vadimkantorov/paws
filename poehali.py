@@ -11,8 +11,11 @@ import boto3
 po = 'poehali'
 empty = [{}]
 
-def N(name = '', resource = '', suffix = ''):
-    return po + ('_' + name if name else '') + ('_' + resource if resource else '') + ('_' + suffix if suffix else '')
+def N(name = '', resource = '', suffix = '', sep = '_'):
+    return po + (sep + name if name else '') + (sep + resource if resource else '') + (sep + suffix if suffix else '')
+
+def random_suffix():
+    return ''.join(random.choices(string.ascii_uppercase.lower(), k = 4))
 
 def TagSpecifications(resource, name = '', suffix = ''):
     return [dict(ResourceType = resource, Tags = [dict(Key = 'Name', Value = N(name = name, suffix = suffix)  )])] 
@@ -37,7 +40,7 @@ def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None
             key_pair = ec2.create_key_pair(KeyName = name)
         except botocore.exceptions.ClientError as err:
             if err.response['Error']['Code'] == 'InvalidKeyPair.Duplicate':
-                key_pair = ec2.create_key_pair(KeyName = name + '_' + ''.join(random.choices(string.ascii_uppercase, k = 4)))
+                key_pair = ec2.create_key_pair(KeyName = N(name = name, suffix = random_suffix()) )
 
         with open(key_path, 'w') as f:
             f.write(key_pair['KeyMaterial'])
@@ -363,15 +366,21 @@ def ls(region, name):
     print('- name is', name)
     print('- region is', region)
     s3 = boto3.client('s3', region_name = region)
-    bucket_names = s3.list_buckets()['Buckets']
-    print('- buckets', bucket_names)
+    bucket_name_prefix = N(name = name).lower().replace('_', '-')
+    buckets = s3.list_buckets()['Buckets']
+    for bucket in buckets:
+        if bucket['Name'].startswith(bucket_name_prefix):
+            print('- bucket is', 's3://' + bucket['Name'])
 
-def mkdir(region, name):
+def mkdir(region, name, suffix):
     print('- name is', name)
     print('- region is', region)
     s3 = boto3.client('s3', region_name = region)
-    print(s3.list_buckets())
-
+    bucket_name = N(name = name, suffix = suffix or random_suffix()).lower().replace('_', '-')
+    print('- bucket creating', bucket_name)
+    bucket_configuration_kwargs = dict(CreateBucketConfiguration = dict(LocationConstraint = region)) if not region.startswith('us-east-1') else {}
+    bucket = s3.create_bucket(Bucket = bucket_name, **bucket_configuration_kwargs)
+    print('- bucket is', 's3://' + bucket['Location'])
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -384,6 +393,7 @@ if __name__ == '__main__':
     parser.add_argument('--vpc-id')
     parser.add_argument('--subnet-id')
     parser.add_argument('--instance-id')
+    parser.add_argument('--suffix')
     parser.add_argument('cmd', choices = ['help', 'ps', 'lsblk', 'blkdeactivate', 'kill', 'killall', 'ssh', 'scp', 'setup', 'micro', 'datasets', 'mkdir', 'ls'])
     args = parser.parse_args()
     
@@ -421,7 +431,7 @@ if __name__ == '__main__':
         datasets(name = args.name, region = args.region, availability_zone = args.availability_zone)
 
     if args.cmd == 'mkdir':
-        mkdir(name = args.name, region = args.region)
+        mkdir(name = args.name, region = args.region, suffix = args.suffix)
     
     if args.cmd == 'ls':
         ls(name = args.name, region = args.region)
