@@ -390,6 +390,20 @@ def mkdir(region, name, suffix):
     bucket = s3.create_bucket(Bucket = bucket_name, **bucket_configuration_kwargs)
     print('- bucket is', 's3://' + bucket['Location'])
 
+def rmdir(region, name, suffix):
+    print('- name is', name)
+    print('- region is', region)
+    s3 = boto3.client('s3', region_name = region)
+    paginator_list_objects_v2 = s3.get_paginator('list_objects_v2')
+    bucket_name = N(name = name, suffix = suffix or random_suffix()).lower().replace('_', '-')
+    print('- bucket deleting', bucket_name)
+    
+    for result in paginator_list_objects_v2.paginate(Bucket=bucket_name, Delimiter='/'):
+        keys = result.get('CommonPrefixes', [])
+        deleted = client.delete_objects(Quiet = False, Bucket = bucket_name, Delete = dict(Objects = [dict(Key = key) for key in keys]))['Deleted']
+
+    print(s3.delete_bucket(Bucket = bucket_name))
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--region', default = 'us-east-1')
@@ -402,7 +416,7 @@ if __name__ == '__main__':
     parser.add_argument('--subnet-id')
     parser.add_argument('--instance-id')
     parser.add_argument('--suffix')
-    parser.add_argument('cmd', choices = ['help', 'ps', 'lsblk', 'blkdeactivate', 'kill', 'killall', 'ssh', 'scp', 'setup', 'micro', 'datasets', 'mkdir', 'ls'])
+    parser.add_argument('cmd', choices = ['help', 'ps', 'lsblk', 'blkdeactivate', 'kill', 'killall', 'ssh', 'scp', 'setup', 'micro', 'datasets', 'mkdir', 'ls', 'rmdir'])
     args = parser.parse_args()
     
     if args.cmd == 'help':
@@ -440,6 +454,9 @@ if __name__ == '__main__':
 
     if args.cmd == 'mkdir':
         mkdir(name = args.name, region = args.region, suffix = args.suffix)
+    
+    if args.cmd == 'rmdir':
+        rmdir(name = args.name, region = args.region, suffix = args.suffix)
     
     if args.cmd == 'ls':
         ls(name = args.name, region = args.region)
