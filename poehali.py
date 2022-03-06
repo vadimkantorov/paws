@@ -272,8 +272,10 @@ def killall(region, name = None):
     ec2 = boto3.client('ec2', region_name = region)
     running_instances = [instance for reservation in ec2.describe_instances(Filters = [dict(Name = 'instance-state-name', Values = ['running'] ), dict(Name = 'tag:Name', Values = [N(name = name) + '_*'])]) ['Reservations'] for instance in reservation['Instances']]
     instance_ids = [instance['InstanceId'] for instance in running_instances]
-    ec2.terminate_instances(InstanceIds = instance_ids)
     print('- instances terminating', instance_ids)
+    if not instance_ids:
+        return
+    ec2.terminate_instances(InstanceIds = instance_ids)
 
 def ssh(region, name, root, instance_id = None, username = 'ubuntu', scp = False):
     root = os.path.expanduser(os.path.join(root, '.' + po))
@@ -319,9 +321,9 @@ def help(region):
     print(f'https://console.aws.amazon.com/ec2/v2/home?region={region}#Volumes')
 
 def datasets(name, root, region, availability_zone):
-    micro(region, availability_zone, name, shutdown_after_init_script = True)
+    micro(region = region, availability_zone = availability_zone, name = name, shutdown_after_init_script = True)
 
-def rmall(region, name):
+def blkdeactivate(region, name):
     print('- name is', name)
     print('- region is', region)
     ec2 = boto3.client('ec2', region_name = region)
@@ -342,7 +344,7 @@ def rmall(region, name):
     print('- volumes other:', volume_ids_other)
             
 
-def ls(region, name):
+def lsblk(region, name):
     print('- name is', name)
     print('- region is', region)
     ec2 = boto3.client('ec2', region_name = region)
@@ -357,6 +359,20 @@ def ls(region, name):
 
         print(f'[{name} := {volume_id} @ {availability_zone}]: {size} Gb, {state}')
 
+def ls(region, name):
+    print('- name is', name)
+    print('- region is', region)
+    s3 = boto3.client('s3', region_name = region)
+    bucket_names = s3.list_buckets()['Buckets']
+    print('- buckets', bucket_names)
+
+def mkdir(region, name):
+    print('- name is', name)
+    print('- region is', region)
+    s3 = boto3.client('s3', region_name = region)
+    print(s3.list_buckets())
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--region', default = 'us-east-1')
@@ -368,7 +384,7 @@ if __name__ == '__main__':
     parser.add_argument('--vpc-id')
     parser.add_argument('--subnet-id')
     parser.add_argument('--instance-id')
-    parser.add_argument('cmd', choices = ['help', 'ps', 'ls', 'kill', 'killall', 'rmall', 'ssh', 'setup', 'micro', 'datasets'])
+    parser.add_argument('cmd', choices = ['help', 'ps', 'lsblk', 'blkdeactivate', 'kill', 'killall', 'ssh', 'scp', 'setup', 'micro', 'datasets', 'mkdir', 'ls'])
     args = parser.parse_args()
     
     if args.cmd == 'help':
@@ -383,11 +399,11 @@ if __name__ == '__main__':
     if args.cmd == 'ps':
         ps(region = args.region, name = args.name, root = args.root)
     
-    if args.cmd == 'ls':
-        ls(region = args.region, name = args.name)
+    if args.cmd == 'lsblk':
+        lsblk(region = args.region, name = args.name)
     
-    if args.cmd == 'rmall':
-        rmall(region = args.region, name = args.name)
+    if args.cmd == 'blkdeactivate':
+        blkdeactivate(region = args.region, name = args.name)
     
     if args.cmd == 'ssh':
         ssh(region = args.region, name = args.name, root = args.root, instance_id = args.instance_id)
@@ -403,3 +419,9 @@ if __name__ == '__main__':
     
     if args.cmd == 'datasets':
         datasets(name = args.name, region = args.region, availability_zone = args.availability_zone)
+
+    if args.cmd == 'mkdir':
+        mkdir(name = args.name, region = args.region)
+    
+    if args.cmd == 'ls':
+        ls(name = args.name, region = args.region)

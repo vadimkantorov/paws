@@ -1,3 +1,12 @@
+```
+# setup infra
+python3 poehali.py setup
+
+# format disk
+python3 poehali.py micro
+
+```
+
 ```shell
 python3 -m pip install awscli
 
