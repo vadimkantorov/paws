@@ -366,11 +366,19 @@ def ls(region, name):
     print('- name is', name)
     print('- region is', region)
     s3 = boto3.client('s3', region_name = region)
+    paginator_list_objects_v2 = s3.get_paginator('list_objects_v2')
     bucket_name_prefix = N(name = name).lower().replace('_', '-')
     buckets = s3.list_buckets()['Buckets']
+    bucket_names = []
     for bucket in buckets:
-        if bucket['Name'].startswith(bucket_name_prefix):
-            print('- bucket is', 's3://' + bucket['Name'])
+        bucket_name = bucket['Name']
+        if bucket_name.startswith(bucket_name_prefix):
+            bucket_names.append(bucket_name)
+            print('- bucket is', 's3://' + bucket_name)
+    
+    for bucket in bucket_names:
+        num_objects = sum(len(result.get('CommonPrefixes', [])) for result in paginator_list_objects_v2.paginate(Bucket=bucket_name, Delimiter='/'))
+        print('- bucket is', 's3://' + bucket_name, '| object count is', num_objects)
 
 def mkdir(region, name, suffix):
     print('- name is', name)
