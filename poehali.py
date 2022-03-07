@@ -479,3 +479,8 @@ if __name__ == '__main__':
     
     if args.cmd == 'ls':
         ls(name = args.name, region = args.region)
+
+    # tar -c ./myfiles | aws s3 cp - s3://my-bucket/myobject"
+    # https://docs.aws.amazon.com/cli/latest/topic/s3-config.html
+    # https://www.linkedin.com/pulse/aws-s3-multipart-uploading-milind-verma
+    # https://www.slideshare.net/AmazonWebServices/deep-dive-aws-command-line-interface-50367179
