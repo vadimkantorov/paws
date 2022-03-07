@@ -126,8 +126,9 @@ def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None
                     ],
                     Resource = ['arn:aws:ec2:*:*:volume/*', 'arn:aws:ec2:*:*:instance/*' ]
                 ),
+                
                 dict(
-                    Effect = "Allow",
+                    Effect = 'Allow',
                     Action = [
                         'ec2:DescribeVolumes',
                         'ec2:DescribeVolumeAttribute',
@@ -137,6 +138,29 @@ def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None
                         'ec2:ReportInstanceStatus'
                     ],
                     Resource = "*"
+                ),
+
+                dict(
+                    Effect = 'Allow',
+                    Action = [
+                        's3:ListBucket',
+                        's3:CreateBucket',
+                        's3:DeleteBucket',
+                        's3:ListAllMyBuckets',
+                        's3:GetBucketLocation'
+                    ],
+                    Resource = 'arn:aws:s3:::*'
+                ),
+
+                dict(
+                    Effect = 'Allow',
+                    Action = [
+                        's3:PutObject',
+                        's3:GetObject',
+                        's3:DeleteObject',
+                        's3:PutObjectAcl'
+                    ],
+                    Resource = 'arn:aws:s3:::*/*'
                 )
             ]
         )
@@ -188,25 +212,25 @@ def micro(region, availability_zone, name, instance_type = 't3.micro', image_nam
     sudo apt update
     sudo apt install -y awscli
 
-    aws ec2 attach-volume --region $REGION --device /dev/nvme1n1 --instance-id $INSTANCEID --volume-id $VOLUMEIDCOLD
-    aws ec2 attach-volume --region $REGION --device /dev/nvme2n1 --instance-id $INSTANCEID --volume-id $VOLUMEIDHOT
-    aws ec2 wait volume-in-use --region $REGION --volume-ids $VOLUMEIDCOLD $VOLUMEIDHOT
+    #aws ec2 attach-volume --region $REGION --device /dev/nvme1n1 --instance-id $INSTANCEID --volume-id $VOLUMEIDCOLD
+    #aws ec2 attach-volume --region $REGION --device /dev/nvme2n1 --instance-id $INSTANCEID --volume-id $VOLUMEIDHOT
+    #aws ec2 wait volume-in-use --region $REGION --volume-ids $VOLUMEIDCOLD $VOLUMEIDHOT
 
-    PATHCOLD=/home/ubuntu/datasets
-    DEVCOLD=/dev/$(lsblk -o +SERIAL | grep ${VOLUMEIDCOLD/-/} | awk '{print $1}')
-    [ "$(sudo file -b -s $DEVCOLD)" == "data" ] && sudo mkfs -t xfs $DEVCOLD
-    mkdir $PATHCOLD
-    sudo mount $DEVCOLD $PATHCOLD
-    sudo chown -R ubuntu $PATHCOLD
+    #PATHCOLD=/home/ubuntu/datasets
+    #DEVCOLD=/dev/$(lsblk -o +SERIAL | grep ${VOLUMEIDCOLD/-/} | awk '{print $1}')
+    #[ "$(sudo file -b -s $DEVCOLD)" == "data" ] && sudo mkfs -t xfs $DEVCOLD
+    #mkdir $PATHCOLD
+    #sudo mount $DEVCOLD $PATHCOLD
+    #sudo chown -R ubuntu $PATHCOLD
 
-    PATHHOT=/home/ubuntu/experiments
-    DEVHOT=/dev/$( lsblk -o +SERIAL | grep ${VOLUMEIDHOT/-/}  | awk '{print $1}')
-    [ "$(sudo file -b -s $DEVHOT)" == "data" ] && sudo mkfs -t xfs $DEVHOT
-    mkdir $PATHHOT
-    sudo mount $DEVHOT $PATHHOT
-    sudo chown -R ubuntu $PATHHOT
+    #PATHHOT=/home/ubuntu/experiments
+    #DEVHOT=/dev/$( lsblk -o +SERIAL | grep ${VOLUMEIDHOT/-/}  | awk '{print $1}')
+    #[ "$(sudo file -b -s $DEVHOT)" == "data" ] && sudo mkfs -t xfs $DEVHOT
+    #mkdir $PATHHOT
+    #sudo mount $DEVHOT $PATHHOT
+    #sudo chown -R ubuntu $PATHHOT
 
-    touch /home/ubuntu/disksready
+    #touch /home/ubuntu/disksready
     
     #aws ec2 detach-volume --region $REGION --device $DEVCOLD --instance-id $INSTANCEID --volume-id $VOLUMEIDCOLD
     #aws ec2 detach-volume --region $REGION --device $DEVHOT --instance-id $INSTANCEID --volume-id $VOLUMEIDHOT
@@ -216,7 +240,7 @@ def micro(region, availability_zone, name, instance_type = 't3.micro', image_nam
     if shutdown_after_init_script:
         init_script += 'sudo shutdown'
 
-    print(init_script)
+    #print(init_script)
     
     instance = ec2.run_instances(
         InstanceType = instance_type, 
@@ -230,7 +254,7 @@ def micro(region, availability_zone, name, instance_type = 't3.micro', image_nam
         IamInstanceProfile = dict(Name = name), 
         UserData = init_script,
     )['Instances'][0]
-    print(instance)
+    #print(instance)
     print('- instance is', instance['InstanceId'])
 
 def gpu(name, root, region, availability_zone):
@@ -371,7 +395,7 @@ def ls(region, name):
     buckets = s3.list_buckets()['Buckets']
     for bucket in buckets:
         if bucket['Name'].startswith(bucket_name_prefix):
-            num_objects = sum(len(result.get('CommonPrefixes', [])) for result in paginator_list_objects_v2.paginate(Bucket = bucket['Name'], Delimiter = '/'))
+            num_objects = sum(page['KeyCount'] for page in paginator_list_objects_v2.paginate(Bucket = bucket['Name'], Delimiter = '/'))
             print('- bucket is', 's3://' + bucket['Name'], '| file count is', num_objects)
 
 def mkdir(region, name, suffix):
@@ -382,21 +406,22 @@ def mkdir(region, name, suffix):
     print('- bucket creating', bucket_name)
     bucket_configuration_kwargs = dict(CreateBucketConfiguration = dict(LocationConstraint = region)) if not region.startswith('us-east-1') else {}
     bucket = s3.create_bucket(Bucket = bucket_name, **bucket_configuration_kwargs)
-    print('- bucket is', 's3://' + bucket['Location'])
+    print('- bucket is', 's3:/' + bucket['Location'])
 
 def rmdir(region, name, suffix):
     print('- name is', name)
     print('- region is', region)
     s3 = boto3.client('s3', region_name = region)
     paginator_list_objects_v2 = s3.get_paginator('list_objects_v2')
-    bucket_name = N(name = name, suffix = suffix or random_suffix()).lower().replace('_', '-')
+    bucket_name = N(name = name, suffix = suffix).lower().replace('_', '-')
     print('- bucket deleting', bucket_name)
     
-    for result in paginator_list_objects_v2.paginate(Bucket=bucket_name, Delimiter='/'):
-        keys = result.get('CommonPrefixes', [])
-        deleted = client.delete_objects(Quiet = False, Bucket = bucket_name, Delete = dict(Objects = [dict(Key = key) for key in keys]))['Deleted']
+    for page in paginator_list_objects_v2.paginate(Bucket=bucket_name, Delimiter='/'):
+        keys = [c['Key'] for c in page['Contents']]
+        deleted = s3.delete_objects(Bucket = bucket_name, Delete = dict(Objects = [dict(Key = key) for key in keys]))['Deleted']
+        print('- files deleting', ['s3://' + bucket_name + '/' + k['Key'] for k in deleted])
 
-    print(s3.delete_bucket(Bucket = bucket_name))
+    s3.delete_bucket(Bucket = bucket_name)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -404,7 +429,7 @@ if __name__ == '__main__':
     parser.add_argument('--availability-zone', default = 'us-east-1a')
     parser.add_argument('--cold-disk-size-gb', type = int, default = 50)
     parser.add_argument('--hot-disk-size-gb', type = int, default = 50)
-    parser.add_argument('--name', default = 'poehalitest54')
+    parser.add_argument('--name', default = 'poehalitest56')
     parser.add_argument('--root', default = '~')
     parser.add_argument('--vpc-id')
     parser.add_argument('--subnet-id')
