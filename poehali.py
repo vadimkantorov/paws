@@ -270,6 +270,10 @@ def ps(region, name, root):
     os.makedirs(root, exist_ok = True)
     ec2 = boto3.client('ec2', region_name = region)
     
+    #TODO: use Filters
+    # https://github.com/aws/aws-cli/issues/4578
+    filters = [dict(Name = 'tag:Name', Values = [po + '*'])]
+
     instances = [instance for reservation in ec2.describe_instances()['Reservations'] for instance in reservation['Instances']]
     for instance in instances:
         instance_name = ([tag['Value'] for tag in instance['Tags'] if tag['Key'] == 'Name'] + ['NoName'])[0]
@@ -357,6 +361,7 @@ def blkdeactivate(region, name):
     
     volume_ids_deleting, volume_ids_other = [], []
 
+    #TODO: use Filters
     volumes = ec2.describe_volumes()['Volumes']
     for volume in volumes:
         volume_name = ([tag['Value'] for tag in volume.get('Tags', []) if tag['Key'] == 'Name'] + ['NoName'])[0]
@@ -484,3 +489,7 @@ if __name__ == '__main__':
     # https://docs.aws.amazon.com/cli/latest/topic/s3-config.html
     # https://www.linkedin.com/pulse/aws-s3-multipart-uploading-milind-verma
     # https://www.slideshare.net/AmazonWebServices/deep-dive-aws-command-line-interface-50367179
+    # export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
+    # export AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+    # export AWS_DEFAULT_REGION=us-west-2
+    # https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-envvars.html
