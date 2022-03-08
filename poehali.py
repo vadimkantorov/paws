@@ -1,6 +1,7 @@
 import os
 import datetime
 import json
+import time
 import random
 import string
 import argparse
@@ -401,15 +402,51 @@ def ls(region, name):
             num_objects = sum(page['KeyCount'] for page in paginator_list_objects_v2.paginate(Bucket = bucket['Name'], Delimiter = '/'))
             print('- bucket is', 's3://' + bucket['Name'], '| file count is', num_objects)
 
-def mkdir(region, name, suffix):
+def mkdir(region, name, suffix, retry = 5):
     print('- name is', name)
     print('- region is', region)
     s3 = boto3.client('s3', region_name = region)
+    iam = boto3.client('iam', region_name = region)
+    iam_username = name
+    try:
+        user = iam.get_user(UserName = iam_username)['User']
+    except:
+        print('- user does not exist, creating')
+        user = iam.create_user(UserName = iam_username)['User']
+        access_key = iam.create_access_key(UserName = iam_username)['AccessKey']
+        print('- access key is', 'AWS_ACCESS_KEY_ID="{AccessKeyId}" AWS_SECRET_ACCESS_KEY="{SecretAccessKey}" AWS_REGION="{region}"'.format(region = region, **access_key)) 
+    print('- user is', user['Arn'])
+
     bucket_name = N(name = name, suffix = suffix or random_suffix()).lower().replace('_', '-')
-    print('- bucket creating', bucket_name)
     bucket_configuration_kwargs = dict(CreateBucketConfiguration = dict(LocationConstraint = region)) if not region.startswith('us-east-1') else {}
     bucket = s3.create_bucket(Bucket = bucket_name, **bucket_configuration_kwargs)
     print('- bucket is', 's3:/' + bucket['Location'])
+
+    bucket_policy = dict(
+        Version= '2012-10-17',
+        Statement= [dict(
+            Sid = 'BucketPolicy',
+            Effect = 'Allow',
+            Principal = dict(AWS = user['Arn']), #'*',
+            Action = 's3:*',
+            Resource = f'arn:aws:s3:::{bucket_name}/*'
+        )]
+    )
+    # policy = iam.create_policy(PolicyName=policy_name, PolicyDocument=json.dumps(bucket_policy))
+    # print(iam.attach_user_policy(UserName=iam_username, PolicyArn=policy['Policy']['Arn']))
+    
+    for k in range(retry):
+        try:
+            s3.put_bucket_policy(Bucket = bucket_name, Policy = json.dumps(bucket_policy))
+        except Exception as e:
+            if 'Invalid principal in policy' in str(e):
+                print('- bucket policy retry')
+                time.sleep(retry)
+                continue
+            else:
+                raise
+        print('- bucket policy set')
+        break
 
 def rmdir(region, name, suffix):
     print('- name is', name)
@@ -432,7 +469,7 @@ if __name__ == '__main__':
     parser.add_argument('--availability-zone', default = 'us-east-1a')
     parser.add_argument('--cold-disk-size-gb', type = int, default = 50)
     parser.add_argument('--hot-disk-size-gb', type = int, default = 50)
-    parser.add_argument('--name', default = 'poehalitest56')
+    parser.add_argument('--name', default = 'poehalitest67')
     parser.add_argument('--root', default = '~')
     parser.add_argument('--vpc-id')
     parser.add_argument('--subnet-id')
