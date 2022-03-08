@@ -88,18 +88,6 @@ def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None
         subnet_id = subnet['SubnetId']
     print('- subnet is', subnet_id)
 
-    cold_disk = (ec2.describe_volumes(Filters = [dict(Name = 'tag:Name', Values = [N(name = name, suffix = 'datasets')])])['Volumes'] + empty)[0]
-    if not cold_disk:
-        print('- cold disk not found, creating', cold_disk_size_gb, 'gb')
-        cold_disk = ec2.create_volume(VolumeType = 'io1', MultiAttachEnabled = True, AvailabilityZone = availability_zone, Size = cold_disk_size_gb, Iops = iops, TagSpecifications = TagSpecifications('volume', name = name, suffix = 'datasets'))
-    print('- cold disk is', cold_disk['VolumeId'])
-    
-    hot_disk = (ec2.describe_volumes(Filters = [dict(Name = 'tag:Name', Values = [N(name = name, suffix = 'experiments')])])['Volumes'] + [None])[0]
-    if not hot_disk:
-        print('- hot disk not found, creating', hot_disk_size_gb, 'gb')
-        hot_disk = ec2.create_volume(VolumeType = 'io1', MultiAttachEnabled = True, AvailabilityZone = availability_zone, Size = hot_disk_size_gb, Iops = iops, TagSpecifications = TagSpecifications('volume', name = name, suffix = 'experiments'))
-    print('- hot disk is', hot_disk['VolumeId'])
-
     #policy_arn = [p for p in iam.list_policies(Scope = 'AWS', PathPrefix = '/service-role/')['Policies'] if p['PolicyName'] == 'AmazonEC2RoleforSSM'][0]['Arn']
 
     try:
@@ -173,6 +161,16 @@ def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None
         instance_profile = iam.create_instance_profile(InstanceProfileName = name)
         iam.add_role_to_instance_profile(InstanceProfileName = name, RoleName = name)
     print('- instance profile is', instance_profile['InstanceProfile']['Arn'])
+
+    disk_spec = dict(cold = ('datasets', cold_disk_size_gb), hot = ('experiments', hot_disk_size_gb))
+    for disk_name, (suffix, gb) in disk_spec.items():
+        disk = (ec2.describe_volumes(Filters = [dict(Name = 'tag:Name', Values = [N(name = name, suffix = suffix)])])['Volumes'] + empty)[0]
+        if not disk:
+            disk = dict(VolumeId = 'disabled')
+            if gb:
+                print('-', disk_name, '(', suffix, ') disk not found, creating', gb, 'gb')
+                cold_disk = ec2.create_volume(VolumeType = 'io1', MultiAttachEnabled = True, AvailabilityZone = availability_zone, Size = gb, Iops = iops, TagSpecifications = TagSpecifications('volume', name = name, suffix = suffix))
+        print('-', disk_name, '(', suffix, ') disk is', disk['VolumeId'])
 
 def micro(region, availability_zone, name, instance_type = 't3.micro', image_name = 'ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-20210430', shutdown_after_init_script = False):
     print('- name is', name)
