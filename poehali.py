@@ -212,9 +212,7 @@ def micro(region, availability_zone, name, instance_type = 't3.micro', image_nam
     sudo apt install -y awscli
 
     #aws ec2 attach-volume --region $REGION --device /dev/nvme1n1 --instance-id $INSTANCEID --volume-id $VOLUMEIDCOLD
-    #aws ec2 attach-volume --region $REGION --device /dev/nvme2n1 --instance-id $INSTANCEID --volume-id $VOLUMEIDHOT
-    #aws ec2 wait volume-in-use --region $REGION --volume-ids $VOLUMEIDCOLD $VOLUMEIDHOT
-
+    #aws ec2 wait volume-in-use --region $REGION --volume-ids $VOLUMEIDCOLD 
     #PATHCOLD=/home/ubuntu/datasets
     #DEVCOLD=/dev/$(lsblk -o +SERIAL | grep ${VOLUMEIDCOLD/-/} | awk '{print $1}')
     #[ "$(sudo file -b -s $DEVCOLD)" == "data" ] && sudo mkfs -t xfs $DEVCOLD
@@ -222,6 +220,8 @@ def micro(region, availability_zone, name, instance_type = 't3.micro', image_nam
     #sudo mount $DEVCOLD $PATHCOLD
     #sudo chown -R ubuntu $PATHCOLD
 
+    #aws ec2 attach-volume --region $REGION --device /dev/nvme2n1 --instance-id $INSTANCEID --volume-id $VOLUMEIDHOT
+    #aws ec2 wait volume-in-use --region $REGION --volume-ids $VOLUMEIDHOT
     #PATHHOT=/home/ubuntu/experiments
     #DEVHOT=/dev/$( lsblk -o +SERIAL | grep ${VOLUMEIDHOT/-/}  | awk '{print $1}')
     #[ "$(sudo file -b -s $DEVHOT)" == "data" ] && sudo mkfs -t xfs $DEVHOT
@@ -229,7 +229,7 @@ def micro(region, availability_zone, name, instance_type = 't3.micro', image_nam
     #sudo mount $DEVHOT $PATHHOT
     #sudo chown -R ubuntu $PATHHOT
 
-    #touch /home/ubuntu/disksready
+    touch /home/ubuntu/initscriptok
     
     #aws ec2 detach-volume --region $REGION --device $DEVCOLD --instance-id $INSTANCEID --volume-id $VOLUMEIDCOLD
     #aws ec2 detach-volume --region $REGION --device $DEVHOT --instance-id $INSTANCEID --volume-id $VOLUMEIDHOT
@@ -239,8 +239,7 @@ def micro(region, availability_zone, name, instance_type = 't3.micro', image_nam
     if shutdown_after_init_script:
         init_script += 'sudo shutdown'
 
-    #print(init_script)
-    
+    #user_data = '''#!/bin/sh\necho export foozle=schmoozle >> /etc/environment\n'''
     instance = ec2.run_instances(
         InstanceType = instance_type, 
         ImageId = image['ImageId'], 
@@ -407,6 +406,11 @@ def mkdir(region, name, suffix, retry = 5):
     print('- region is', region)
     s3 = boto3.client('s3', region_name = region)
     iam = boto3.client('iam', region_name = region)
+    bucket_name = N(name = name, suffix = suffix or random_suffix()).lower().replace('_', '-')
+    bucket_configuration_kwargs = dict(CreateBucketConfiguration = dict(LocationConstraint = region)) if not region.startswith('us-east-1') else {}
+    bucket = s3.create_bucket(Bucket = bucket_name, **bucket_configuration_kwargs)
+    print('- bucket is', 's3:/' + bucket['Location'])
+    
     iam_username = name
     try:
         user = iam.get_user(UserName = iam_username)['User']
@@ -414,13 +418,10 @@ def mkdir(region, name, suffix, retry = 5):
         print('- user does not exist, creating')
         user = iam.create_user(UserName = iam_username)['User']
         access_key = iam.create_access_key(UserName = iam_username)['AccessKey']
-        print('- access key is', 'AWS_ACCESS_KEY_ID="{AccessKeyId}" AWS_SECRET_ACCESS_KEY="{SecretAccessKey}" AWS_REGION="{region}"'.format(region = region, **access_key)) 
+        print('- access key is', access_key['AccessKeyId']) 
+        cmd = 'AWS_ACCESS_KEY_ID="{AccessKeyId}" AWS_SECRET_ACCESS_KEY="{SecretAccessKey}" AWS_REGION="{region}" AWS_DEFAULT_OUTPUT="json" aws s3 ls s3:/{Locaion}'.format(region = region, **access_key, **bucket)
+        print('- test command is\n\n', cmd, '\n')
     print('- user is', user['Arn'])
-
-    bucket_name = N(name = name, suffix = suffix or random_suffix()).lower().replace('_', '-')
-    bucket_configuration_kwargs = dict(CreateBucketConfiguration = dict(LocationConstraint = region)) if not region.startswith('us-east-1') else {}
-    bucket = s3.create_bucket(Bucket = bucket_name, **bucket_configuration_kwargs)
-    print('- bucket is', 's3:/' + bucket['Location'])
 
     bucket_policy = dict(
         Version= '2012-10-17',
@@ -447,6 +448,10 @@ def mkdir(region, name, suffix, retry = 5):
                 raise
         print('- bucket policy set')
         break
+    
+    bucket_name += '-public'
+    #bucket = s3.create_bucket(Bucket = bucket_name, **bucket_configuration_kwargs)
+    #print('- bucket is', 's3:/' + bucket['Location'])
 
 def rmdir(region, name, suffix):
     print('- name is', name)
