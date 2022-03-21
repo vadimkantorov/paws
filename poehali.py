@@ -391,10 +391,19 @@ def mkdir(region, name, suffix, retry = 5):
     print('- region is', region)
     s3 = boto3.client('s3', region_name = region)
     iam = boto3.client('iam', region_name = region)
-    bucket_name = N(name = name, suffix = suffix or random_suffix()).lower().replace('_', '-')
+    if suffix == '':
+        suffix = random_suffix()
+
+    bucket_name = N(name = name, suffix = suffix).lower().replace('_', '-')
+    print('- bucket name is', bucket_name)
+    
+    if any(bucket['Name'] == bucket_name for bucket in s3.list_buckets()['Buckets']):
+        return print('- bucket exists, quitting')
+    
     bucket_configuration_kwargs = dict(CreateBucketConfiguration = dict(LocationConstraint = region)) if not region.startswith('us-east-1') else {}
     bucket = s3.create_bucket(Bucket = bucket_name, **bucket_configuration_kwargs)
     print('- bucket is', 's3:/' + bucket['Location'])
+    print('- listing is', f'https://s3.amazonaws.com/{bucket_name}/')
     
     iam_username = name
     try:
@@ -414,9 +423,25 @@ def mkdir(region, name, suffix, retry = 5):
             dict(
                 Sid = 'FullAccess',
                 Effect = 'Allow',
-                Principal = dict(AWS = user['Arn']), #'*',
+                Principal = dict(AWS = user['Arn']),
                 Action = 's3:*',
                 Resource =  [f'arn:aws:s3:::{bucket_name}/*', f'arn:aws:s3:::{bucket_name}'],
+            ),
+
+            dict(
+                Sid = 'PublicList',
+                Effect = 'Allow',
+                Principal = '*',
+                Action = 's3:ListBucket',
+                Resource = f'arn:aws:s3:::{bucket_name}',
+            ),
+
+            dict(
+                Sid = 'PublicGet',
+                Effect = 'Allow',
+                Principal = '*',
+                Action = 's3:GetObject',
+                Resource = [f'arn:aws:s3:::{bucket_name}/public/*', f'arn:aws:s3:::{bucket_name}/index.html'],
             )
         ]
     )
@@ -434,21 +459,13 @@ def mkdir(region, name, suffix, retry = 5):
                 raise
         print('- bucket policy set')
         break
+    
+    s3.put_object(ACL = 'public-read', Body = b'<html><b>Hello world (public)!<b></html>', Bucket = bucket_name, Key = 'public/index.html', ContentType = 'text/html')
+    s3.put_object(ACL = 'public-read', Body = b'<html>Error (public)</html>', Bucket = bucket_name, Key = 'public/error.html', ContentType = 'text/html')
+    s3.put_bucket_website(Bucket = bucket_name, WebsiteConfiguration = dict(ErrorDocument = dict(Key = 'public/error.html'), IndexDocument = dict(Suffix = 'index.html')))
 
-    bucket_name += '-public'
-    bucket = s3.create_bucket(Bucket = bucket_name, **bucket_configuration_kwargs)
-    print('- bucket is', 's3:/' + bucket['Location'], f'https://s3.amazonaws.com/{bucket_name}/')
-    bucket_policy = dict(
-        Version= '2012-10-17',
-        Statement = [dict(
-            Sid = 'PublicReadGetObject',
-            Effect = 'Allow',
-            Principal = '*',
-            Action = ['s3:GetObject', 's3:ListBucket'],
-            Resource = [f'arn:aws:s3:::{bucket_name}/*', f'arn:aws:s3:::{bucket_name}'],
-        )]
-    )
-    s3.put_bucket_policy(Bucket = bucket_name, Policy = json.dumps(bucket_policy))
+    public_url = f'http://{bucket_name}.s3-website-{region}.amazonaws.com/public'
+    print('- public is', public_url)
 
 def rmdir(region, name, suffix):
     print('- name is', name)
@@ -474,8 +491,8 @@ if __name__ == '__main__':
     parser.add_argument('--subnet-id')
     parser.add_argument('--instance-id')
     parser.add_argument('--root', default = '~')
-    parser.add_argument('--name', default = 'poehalitest71')
-    parser.add_argument('--suffix', default = 'poehalitest71')
+    parser.add_argument('--name'  , default = 'poehalitest80')
+    parser.add_argument('--suffix')
     parser.add_argument('cmd', choices = ['help', 'ps', 'lsblk', 'blkdeactivate', 'kill', 'killall', 'ssh', 'scp', 'setup', 'micro', 'datasets', 'mkdir', 'ls', 'rmdir'])
     parser.add_argument('--cold-disk-size-gb', type = int, default = 0)
     parser.add_argument('--hot-disk-size-gb', type = int, default = 0)
