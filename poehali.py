@@ -173,7 +173,7 @@ def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None
                 cold_disk = ec2.create_volume(VolumeType = 'io1', MultiAttachEnabled = True, AvailabilityZone = availability_zone, Size = gb, Iops = iops, TagSpecifications = TagSpecifications('volume', name = name, suffix = suffix))
         print('-', disk_name, '(', suffix, ') disk is', disk['VolumeId'])
 
-def micro(region, availability_zone, name, instance_type = 't3.micro', image_name = 'ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-20210430', shutdown_after_init_script = False):
+def run(region, availability_zone, name, instance_type = 't3.micro', image_name = 'ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-20210430', shutdown_after_init_script = False, env = {}, username = 'ubuntu'):
     print('- name is', name)
     print('- region is', region)
     print('- availability zone is', availability_zone)
@@ -184,62 +184,47 @@ def micro(region, availability_zone, name, instance_type = 't3.micro', image_nam
     
     vpc = (ec2.describe_vpcs(Filters = [dict(Name = 'tag:Name', Values = [po + '*'])])['Vpcs'] + empty)[0]
     subnet = (ec2.describe_subnets(Filters = [dict(Name = 'availability-zone', Values = [availability_zone]), dict(Name = 'tag:Name', Values = [po + '*'])])['Subnets'] + empty)[0]
-    
+    assert vpc and subnet
     print('- vpc is', vpc.get('VpcId'))
     print('- subnet is', subnet.get('SubnetId'))
-    assert vpc and subnet
     
     security_group = (ec2.describe_security_groups(Filters = [dict(Name = 'vpc-id', Values = [vpc['VpcId']]), dict(Name = 'group-name', Values = [name])])['SecurityGroups'] + empty)[0]
     image = (ec2.describe_images(Filters = [dict(Name = 'name', Values = [image_name])])['Images'] + empty)[0]
-    volume_cold = (ec2.describe_volumes(Filters = [dict(Name = 'tag:Name', Values = [N(name, 'datasets')])])['Volumes'] + empty)[0]
-    volume_hot = (ec2.describe_volumes(Filters = [dict(Name = 'tag:Name', Values = [N(name, 'experiments')])])['Volumes'] + empty)[0]
-
+    assert security_group and image 
     print('- security group is', security_group.get('GroupId'))
     print('- image is', image.get('ImageId'))
+
+    volume_cold = (ec2.describe_volumes(Filters = [dict(Name = 'tag:Name', Values = [N(name, 'datasets')])])['Volumes'] + empty)[0]
+    volume_hot = (ec2.describe_volumes(Filters = [dict(Name = 'tag:Name', Values = [N(name, 'experiments')])])['Volumes'] + empty)[0]
     print('- volume cold is', volume_cold.get('VolumeId'))
     print('- volume hot is', volume_hot.get('VolumeId'))
-    assert security_group and image and volume_cold and volume_hot
-
-    init_script = '''#!/bin/bash -xe
+    disk_spec = {
+        **({f'/home/{username}/datasets'    : volume_cold['VolumeId'] } if volume_cold else {})
+        **({f'/home/{username}/experiments' : volume_hot ['VolumeId'] } if volume_hot  else {})
+    }
+    
+    init_script = '''#!/bin/bash -ex
     exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
-
-    REGION=${REGION}
-    VOLUMEIDCOLD=${VOLUMEIDCOLD}
-    VOLUMEIDHOT=${VOLUMEIDHOT}
-    INSTANCEID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
-
     sudo apt update
     sudo apt install -y awscli
-
-    #aws ec2 attach-volume --region $REGION --device /dev/nvme1n1 --instance-id $INSTANCEID --volume-id $VOLUMEIDCOLD
-    #aws ec2 wait volume-in-use --region $REGION --volume-ids $VOLUMEIDCOLD 
-    #PATHCOLD=/home/ubuntu/datasets
-    #DEVCOLD=/dev/$(lsblk -o +SERIAL | grep ${VOLUMEIDCOLD/-/} | awk '{print $1}')
-    #[ "$(sudo file -b -s $DEVCOLD)" == "data" ] && sudo mkfs -t xfs $DEVCOLD
-    #mkdir $PATHCOLD
-    #sudo mount $DEVCOLD $PATHCOLD
-    #sudo chown -R ubuntu $PATHCOLD
-
-    #aws ec2 attach-volume --region $REGION --device /dev/nvme2n1 --instance-id $INSTANCEID --volume-id $VOLUMEIDHOT
-    #aws ec2 wait volume-in-use --region $REGION --volume-ids $VOLUMEIDHOT
-    #PATHHOT=/home/ubuntu/experiments
-    #DEVHOT=/dev/$( lsblk -o +SERIAL | grep ${VOLUMEIDHOT/-/}  | awk '{print $1}')
-    #[ "$(sudo file -b -s $DEVHOT)" == "data" ] && sudo mkfs -t xfs $DEVHOT
-    #mkdir $PATHHOT
-    #sudo mount $DEVHOT $PATHHOT
-    #sudo chown -R ubuntu $PATHHOT
-
-    touch /home/ubuntu/initscriptok
+    '''
     
-    #aws ec2 detach-volume --region $REGION --device $DEVCOLD --instance-id $INSTANCEID --volume-id $VOLUMEIDCOLD
-    #aws ec2 detach-volume --region $REGION --device $DEVHOT --instance-id $INSTANCEID --volume-id $VOLUMEIDHOT
-    
-    '''.replace('${REGION}', region).replace('${VOLUMEIDCOLD}', volume_cold['VolumeId']).replace('${VOLUMEIDHOT}', volume_hot['VolumeId'])
+    for i, (mount_path, volume_id) in enumerate(disk_spec.items()):
+        init_script += '''
+    INSTANCEID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
+    VOLUMEID=${VOLUMEID}
+    aws ec2 attach-volume --region ${REGION} --device /dev/nvme${DISKNUM}n1 --instance-id $INSTANCEID --volume-id $VOLUMEID
+    aws ec2 wait volume-in-use --region ${REGION} --volume-ids $VOLUMEID
+    MOUNTDEV=/dev/$(lsblk -o +SERIAL | grep ${VOLUMEID/-/} | awk '{print $1}')
+    [ "$(sudo file -b -s $MOUNTDEV)" == "data" ] && sudo mkfs -t xfs $MOUNTDEV
+    mkdir -p ${MOUNTPATH}
+    sudo mount $MOUNTDEV ${MOUNTPATH}
+    sudo chown -R ${USERNAME} ${MOUNTPATH}
+    '''.replace('${REGION}', region).replace('${DISKNUM}', 1 + i).replace('${VOLUMEID}', volume_id).replace('${MOUNTPATH}', mount_path).replace('${USERNAME}', username)
 
     if shutdown_after_init_script:
         init_script += 'sudo shutdown'
-
-    #user_data = '''#!/bin/sh\necho export foozle=schmoozle >> /etc/environment\n'''
+    
     instance = ec2.run_instances(
         InstanceType = instance_type, 
         ImageId = image['ImageId'], 
@@ -252,8 +237,8 @@ def micro(region, availability_zone, name, instance_type = 't3.micro', image_nam
         IamInstanceProfile = dict(Name = name), 
         UserData = init_script,
     )['Instances'][0]
-    #print(instance)
     print('- instance is', instance['InstanceId'])
+    return instance['InstanceId']
 
 def gpu(name, root, region, availability_zone):
     pass
@@ -350,7 +335,7 @@ def help(region):
     print(f'https://console.aws.amazon.com/ec2/v2/home?region={region}#Volumes')
 
 def datasets(name, root, region, availability_zone):
-    micro(region = region, availability_zone = availability_zone, name = name, shutdown_after_init_script = True)
+    run(region = region, availability_zone = availability_zone, name = name, shutdown_after_init_script = True)
 
 def blkdeactivate(region, name):
     print('- name is', name)
@@ -419,25 +404,26 @@ def mkdir(region, name, suffix, retry = 5):
         user = iam.create_user(UserName = iam_username)['User']
         access_key = iam.create_access_key(UserName = iam_username)['AccessKey']
         print('- access key is', access_key['AccessKeyId']) 
-        cmd = 'AWS_ACCESS_KEY_ID="{AccessKeyId}" AWS_SECRET_ACCESS_KEY="{SecretAccessKey}" AWS_REGION="{region}" AWS_DEFAULT_OUTPUT="json" aws s3 ls s3:/{Locaion}'.format(region = region, **access_key, **bucket)
+        cmd = 'AWS_ACCESS_KEY_ID="{AccessKeyId}" AWS_SECRET_ACCESS_KEY="{SecretAccessKey}" AWS_REGION="{region}" AWS_DEFAULT_OUTPUT="json" aws s3 ls s3:/{Location}'.format(region = region, **access_key, **bucket)
         print('- test command is\n\n', cmd, '\n')
     print('- user is', user['Arn'])
 
     bucket_policy = dict(
         Version= '2012-10-17',
-        Statement= [dict(
-            Sid = 'BucketPolicy',
-            Effect = 'Allow',
-            Principal = dict(AWS = user['Arn']), #'*',
-            Action = 's3:*',
-            Resource = f'arn:aws:s3:::{bucket_name}/*'
-        )]
+        Statement= [
+            dict(
+                Sid = 'FullAccess',
+                Effect = 'Allow',
+                Principal = dict(AWS = user['Arn']), #'*',
+                Action = 's3:*',
+                Resource =  [f'arn:aws:s3:::{bucket_name}/*', f'arn:aws:s3:::{bucket_name}'],
+            )
+        ]
     )
-    # policy = iam.create_policy(PolicyName=policy_name, PolicyDocument=json.dumps(bucket_policy))
-    # print(iam.attach_user_policy(UserName=iam_username, PolicyArn=policy['Policy']['Arn']))
-    
     for k in range(retry):
         try:
+            # policy = iam.create_policy(PolicyName=policy_name, PolicyDocument=json.dumps(bucket_policy))
+            # print(iam.attach_user_policy(UserName=iam_username, PolicyArn=policy['Policy']['Arn']))
             s3.put_bucket_policy(Bucket = bucket_name, Policy = json.dumps(bucket_policy))
         except Exception as e:
             if 'Invalid principal in policy' in str(e):
@@ -448,10 +434,21 @@ def mkdir(region, name, suffix, retry = 5):
                 raise
         print('- bucket policy set')
         break
-    
+
     bucket_name += '-public'
-    #bucket = s3.create_bucket(Bucket = bucket_name, **bucket_configuration_kwargs)
-    #print('- bucket is', 's3:/' + bucket['Location'])
+    bucket = s3.create_bucket(Bucket = bucket_name, **bucket_configuration_kwargs)
+    print('- bucket is', 's3:/' + bucket['Location'], f'https://s3.amazonaws.com/{bucket_name}/')
+    bucket_policy = dict(
+        Version= '2012-10-17',
+        Statement = [dict(
+            Sid = 'PublicReadGetObject',
+            Effect = 'Allow',
+            Principal = '*',
+            Action = ['s3:GetObject', 's3:ListBucket'],
+            Resource = [f'arn:aws:s3:::{bucket_name}/*', f'arn:aws:s3:::{bucket_name}'],
+        )]
+    )
+    s3.put_bucket_policy(Bucket = bucket_name, Policy = json.dumps(bucket_policy))
 
 def rmdir(region, name, suffix):
     print('- name is', name)
@@ -472,15 +469,16 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--region', default = 'us-east-1')
     parser.add_argument('--availability-zone', default = 'us-east-1a')
-    parser.add_argument('--cold-disk-size-gb', type = int, default = 50)
-    parser.add_argument('--hot-disk-size-gb', type = int, default = 50)
-    parser.add_argument('--name', default = 'poehalitest67')
-    parser.add_argument('--root', default = '~')
+    parser.add_argument('--username', default = 'ubuntu')
     parser.add_argument('--vpc-id')
     parser.add_argument('--subnet-id')
     parser.add_argument('--instance-id')
-    parser.add_argument('--suffix')
+    parser.add_argument('--root', default = '~')
+    parser.add_argument('--name', default = 'poehalitest71')
+    parser.add_argument('--suffix', default = 'poehalitest71')
     parser.add_argument('cmd', choices = ['help', 'ps', 'lsblk', 'blkdeactivate', 'kill', 'killall', 'ssh', 'scp', 'setup', 'micro', 'datasets', 'mkdir', 'ls', 'rmdir'])
+    parser.add_argument('--cold-disk-size-gb', type = int, default = 0)
+    parser.add_argument('--hot-disk-size-gb', type = int, default = 0)
     args = parser.parse_args()
     
     if args.cmd == 'help':
@@ -511,7 +509,8 @@ if __name__ == '__main__':
         setup(name = args.name, region = args.region, root = args.root, availability_zone = args.availability_zone, vpc_id = args.vpc_id, cold_disk_size_gb = args.cold_disk_size_gb, hot_disk_size_gb = args.hot_disk_size_gb)
     
     if args.cmd == 'micro':
-        micro(name = args.name, region = args.region, availability_zone = args.availability_zone)
+        instance_id = run(name = args.name, region = args.region, availability_zone = args.availability_zone, instance_type = 't3.micro', username = args.username)
+        ssh(name = args.name, region = args.region, root = args.root, instance_id = instance_id, username = args.username)
     
     if args.cmd == 'datasets':
         datasets(name = args.name, region = args.region, availability_zone = args.availability_zone)
