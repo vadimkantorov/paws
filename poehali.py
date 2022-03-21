@@ -173,7 +173,7 @@ def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None
                 cold_disk = ec2.create_volume(VolumeType = 'io1', MultiAttachEnabled = True, AvailabilityZone = availability_zone, Size = gb, Iops = iops, TagSpecifications = TagSpecifications('volume', name = name, suffix = suffix))
         print('-', disk_name, '(', suffix, ') disk is', disk['VolumeId'])
 
-def run(region, availability_zone, name, instance_type = 't3.micro', image_name = 'ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-20210430', shutdown_after_init_script = False, env = {}, username = 'ubuntu'):
+def run(region, availability_zone, name, instance_type = 't3.micro', image_name = 'ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-20210430', shutdown_after_init_script = False, env = {}, username = 'ubuntu', script_path = None, script_body = ''):
     print('- name is', name)
     print('- region is', region)
     print('- availability zone is', availability_zone)
@@ -222,6 +222,17 @@ def run(region, availability_zone, name, instance_type = 't3.micro', image_name 
     sudo chown -R ${USERNAME} ${MOUNTPATH}
     '''.replace('${REGION}', region).replace('${DISKNUM}', 1 + i).replace('${VOLUMEID}', volume_id).replace('${MOUNTPATH}', mount_path).replace('${USERNAME}', username)
 
+    if script_path:
+        with open(script_path) as f:
+            script_body = f.read() + '\n'
+
+    if script_body:
+        init_script += f'''
+    sudo -i -u {username} bash - << EOF
+    {script_body}
+    EOF
+    '''
+
     if shutdown_after_init_script:
         init_script += 'sudo shutdown'
     
@@ -240,9 +251,6 @@ def run(region, availability_zone, name, instance_type = 't3.micro', image_name 
     print('- instance is', instance['InstanceId'])
     return instance['InstanceId']
 
-def gpu(name, root, region, availability_zone):
-    pass
-
 def ps(region, name, root):
     root = os.path.expanduser(os.path.join(root, '.' + po))
     print('- name is', name)
@@ -250,9 +258,10 @@ def ps(region, name, root):
     print('- root is', root)
     print()
     
-    os.makedirs(root, exist_ok = True)
     ec2 = boto3.client('ec2', region_name = region)
     
+    #TODO: print instance tags
+
     #TODO: use Filters
     # https://github.com/aws/aws-cli/issues/4578
     filters = [dict(Name = 'tag:Name', Values = [po + '*'])]
@@ -316,6 +325,7 @@ def ssh(region, name, root, instance_id = None, username = 'ubuntu', scp = False
     
     public_ip = instance.get('PublicIpAddress')
     print('- ip is', public_ip)
+    #TODO: implement waiting for public IP and for disks ready
     assert public_ip
 
     cmd = ['ssh' if not scp else 'scp', '-o', 'StrictHostKeyChecking=no', '-i', os.path.join(root, name + '.pem'), f'{username}@{public_ip}']
@@ -333,9 +343,6 @@ def help(region):
     print(f'https://console.aws.amazon.com/ec2/v2/home?region={region}#KeyPairs')
     print(f'https://console.aws.amazon.com/ec2/v2/home?region={region}#Instances')
     print(f'https://console.aws.amazon.com/ec2/v2/home?region={region}#Volumes')
-
-def datasets(name, root, region, availability_zone):
-    run(region = region, availability_zone = availability_zone, name = name, shutdown_after_init_script = True)
 
 def blkdeactivate(region, name):
     print('- name is', name)
@@ -364,6 +371,7 @@ def lsblk(region, name):
     print('- region is', region)
     ec2 = boto3.client('ec2', region_name = region)
     
+    #TODO: filter by name, maybe with filters
     volumes = ec2.describe_volumes()['Volumes']
     for volume in volumes:
         volume_name = ([tag['Value'] for tag in volume.get('Tags', []) if tag['Key'] == 'Name'] + ['NoName'])[0]
@@ -467,7 +475,7 @@ def mkdir(region, name, suffix, retry = 5):
     public_url = f'http://{bucket_name}.s3-website-{region}.amazonaws.com/public'
     print('- public is', public_url)
 
-def rmdir(region, name, suffix):
+def rm(region, name, suffix):
     print('- name is', name)
     print('- region is', region)
     s3 = boto3.client('s3', region_name = region)
@@ -475,12 +483,24 @@ def rmdir(region, name, suffix):
     bucket_name = N(name = name, suffix = suffix).lower().replace('_', '-')
     print('- bucket deleting', bucket_name)
     
-    for page in paginator_list_objects_v2.paginate(Bucket=bucket_name, Delimiter='/'):
+    for page in paginator_list_objects_v2.paginate(Bucket = bucket_name, Delimiter = '/'):
         keys = [c['Key'] for c in page['Contents']]
         deleted = s3.delete_objects(Bucket = bucket_name, Delete = dict(Objects = [dict(Key = key) for key in keys]))['Deleted']
         print('- files deleting', ['s3://' + bucket_name + '/' + k['Key'] for k in deleted])
 
     s3.delete_bucket(Bucket = bucket_name)
+
+def clean(region, name, force):
+    pass
+
+def datasets(name, root, region, availability_zone):
+    run(region = region, availability_zone = availability_zone, name = name, shutdown_after_init_script = True)
+
+def micro(name, root, region, availability_zone):
+    pass
+
+def gpu(name, root, region, availability_zone):
+    pass
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -493,7 +513,7 @@ if __name__ == '__main__':
     parser.add_argument('--root', default = '~')
     parser.add_argument('--name'  , default = 'poehalitest80')
     parser.add_argument('--suffix')
-    parser.add_argument('cmd', choices = ['help', 'ps', 'lsblk', 'blkdeactivate', 'kill', 'killall', 'ssh', 'scp', 'setup', 'micro', 'datasets', 'mkdir', 'ls', 'rmdir'])
+    parser.add_argument('cmd', choices = ['help', 'ps', 'lsblk', 'blkdeactivate', 'kill', 'killall', 'ssh', 'scp', 'setup', 'micro', 'datasets', 'mkdir', 'ls', 'rm', 'clean'])
     parser.add_argument('--cold-disk-size-gb', type = int, default = 0)
     parser.add_argument('--hot-disk-size-gb', type = int, default = 0)
     args = parser.parse_args()
@@ -535,11 +555,14 @@ if __name__ == '__main__':
     if args.cmd == 'mkdir':
         mkdir(name = args.name, region = args.region, suffix = args.suffix)
     
-    if args.cmd == 'rmdir':
-        rmdir(name = args.name, region = args.region, suffix = args.suffix)
+    if args.cmd == 'rm':
+        rm(name = args.name, region = args.region, suffix = args.suffix)
     
     if args.cmd == 'ls':
         ls(name = args.name, region = args.region)
+    
+    if args.cmd == 'clean':
+        clean(name = args.name, region = args.region)
 
     # tar -c ./myfiles | aws s3 cp - s3://my-bucket/myobject"
     # https://docs.aws.amazon.com/cli/latest/topic/s3-config.html
