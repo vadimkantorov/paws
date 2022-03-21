@@ -173,7 +173,7 @@ def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None
                 cold_disk = ec2.create_volume(VolumeType = 'io1', MultiAttachEnabled = True, AvailabilityZone = availability_zone, Size = gb, Iops = iops, TagSpecifications = TagSpecifications('volume', name = name, suffix = suffix))
         print('-', disk_name, '(', suffix, ') disk is', disk['VolumeId'])
 
-def run(region, availability_zone, name, instance_type = 't3.micro', image_name = 'ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-20210430', shutdown_after_init_script = False, env = {}, username = 'ubuntu', script_path = None, script_body = ''):
+def run(region, availability_zone, name, instance_type = 't3.micro', image_name = 'ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-20210430', shutdown_after_init_script = False, username = 'ubuntu', job_path = None, job_body = '', env_path = None, env = {}):
     print('- name is', name)
     print('- region is', region)
     print('- availability zone is', availability_zone)
@@ -206,7 +206,7 @@ def run(region, availability_zone, name, instance_type = 't3.micro', image_name 
     init_script = '''#!/bin/bash -ex
     exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
     sudo apt update
-    sudo apt install -y awscli
+    sudo apt install -y awscli git wget
     '''
     
     for i, (mount_path, volume_id) in enumerate(disk_spec.items()):
@@ -222,14 +222,20 @@ def run(region, availability_zone, name, instance_type = 't3.micro', image_name 
     sudo chown -R ${USERNAME} ${MOUNTPATH}
     '''.replace('${REGION}', region).replace('${DISKNUM}', 1 + i).replace('${VOLUMEID}', volume_id).replace('${MOUNTPATH}', mount_path).replace('${USERNAME}', username)
 
-    if script_path:
-        with open(script_path) as f:
-            script_body = f.read() + '\n'
+    if env_path:
+        with open(env_path) as f:
+            init_script += f.read() + '\n'
 
-    if script_body:
+    init_script += '\n'.join(f'export {k}="{v}"' for k, v in env.items()) + '\n'
+    
+    if job_path:
+        with open(job_path) as f:
+            job_body = f.read() + '\n'
+
+    if job_body:
         init_script += f'''
     sudo -i -u {username} bash - << EOF
-    {script_body}
+    {job_body}
     EOF
     '''
 
@@ -504,6 +510,7 @@ def gpu(name, root, region, availability_zone):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
+    parser.add_argument('cmd', choices = ['help', 'ps', 'lsblk', 'blkdeactivate', 'kill', 'killall', 'ssh', 'scp', 'setup', 'micro', 'datasets', 'mkdir', 'ls', 'rm', 'clean', 'run'])
     parser.add_argument('--region', default = 'us-east-1')
     parser.add_argument('--availability-zone', default = 'us-east-1a')
     parser.add_argument('--username', default = 'ubuntu')
@@ -511,9 +518,12 @@ if __name__ == '__main__':
     parser.add_argument('--subnet-id')
     parser.add_argument('--instance-id')
     parser.add_argument('--root', default = '~')
+    parser.add_argument('--job-path')
+    parser.add_argument('--instance-type', deafult = 't3.mciro', choices = ['t3.micro'])
     parser.add_argument('--name'  , default = 'poehalitest80')
     parser.add_argument('--suffix')
-    parser.add_argument('cmd', choices = ['help', 'ps', 'lsblk', 'blkdeactivate', 'kill', 'killall', 'ssh', 'scp', 'setup', 'micro', 'datasets', 'mkdir', 'ls', 'rm', 'clean'])
+    parser.add_argument('--env-path')
+    parser.add_argument('--env', nargs = '*')
     parser.add_argument('--cold-disk-size-gb', type = int, default = 0)
     parser.add_argument('--hot-disk-size-gb', type = int, default = 0)
     args = parser.parse_args()
@@ -546,8 +556,8 @@ if __name__ == '__main__':
         setup(name = args.name, region = args.region, root = args.root, availability_zone = args.availability_zone, vpc_id = args.vpc_id, cold_disk_size_gb = args.cold_disk_size_gb, hot_disk_size_gb = args.hot_disk_size_gb)
     
     if args.cmd == 'micro':
-        instance_id = run(name = args.name, region = args.region, availability_zone = args.availability_zone, instance_type = 't3.micro', username = args.username)
-        ssh(name = args.name, region = args.region, root = args.root, instance_id = instance_id, username = args.username)
+        instanceid = micro(name = args.name, region = args.region, availability_zone = args.availability_zone, instance_type = 't3.micro', username = args.username)
+        #ssh(name = args.name, region = args.region, root = args.root, instance_id = instance_id, username = args.username)
     
     if args.cmd == 'datasets':
         datasets(name = args.name, region = args.region, availability_zone = args.availability_zone)
@@ -563,6 +573,9 @@ if __name__ == '__main__':
     
     if args.cmd == 'clean':
         clean(name = args.name, region = args.region)
+    
+    if args.cmd == 'run':
+        run(name = args.name, region = args.region, availability_zone = args.availability_zone, instance_type = args.instance_type, username = args.username, job_path = args.job_path, env = dict(kv.split('=') for kv in args.env), env_path = args.env_path)
 
     # tar -c ./myfiles | aws s3 cp - s3://my-bucket/myobject"
     # https://docs.aws.amazon.com/cli/latest/topic/s3-config.html
