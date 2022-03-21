@@ -173,7 +173,7 @@ def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None
                 cold_disk = ec2.create_volume(VolumeType = 'io1', MultiAttachEnabled = True, AvailabilityZone = availability_zone, Size = gb, Iops = iops, TagSpecifications = TagSpecifications('volume', name = name, suffix = suffix))
         print('-', disk_name, '(', suffix, ') disk is', disk['VolumeId'])
 
-def run(region, availability_zone, name, instance_type = 't3.micro', image_name = 'ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-20210430', shutdown_after_init_script = False, username = 'ubuntu', job_path = None, job_body = '', env_path = None, env = {}):
+def run(region, availability_zone, name, instance_type = 't3.micro', image_name = 'ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-20210430', shutdown_after_init_script = False, username = 'ubuntu', job_path = None, job_body = '', env_path = None, env = {}, git_clone = None, git_tag = None, repo_dir = None):
     print('- name is', name)
     print('- region is', region)
     print('- availability zone is', availability_zone)
@@ -228,9 +228,12 @@ def run(region, availability_zone, name, instance_type = 't3.micro', image_name 
 
     init_script += '\n'.join(f'export {k}="{v}"' for k, v in env.items()) + '\n'
     
+    if git_clone:
+        job_bidy = 'git clone --single-branch --depth 1' + (f' --branch "{git_tag}" ' if git_tag else '') + ' "{git_clone}"' + (f' "{repo_dir}"' if repo_dir else '') + '\n' + job_body
+
     if job_path:
         with open(job_path) as f:
-            job_body = f.read() + '\n'
+            job_body += f.read() + '\n'
 
     if job_body:
         init_script += f'''
@@ -479,9 +482,9 @@ def mkdir(region, name, suffix, retry = 5):
     s3.put_bucket_website(Bucket = bucket_name, WebsiteConfiguration = dict(ErrorDocument = dict(Key = 'public/error.html'), IndexDocument = dict(Suffix = 'index.html')))
 
     public_url = f'http://{bucket_name}.s3-website-{region}.amazonaws.com/public'
-    print('- public is', public_url)
+    print('- public site is', public_url)
 
-def rm(region, name, suffix):
+def rm_rf(region, name, suffix = None):
     print('- name is', name)
     print('- region is', region)
     s3 = boto3.client('s3', region_name = region)
@@ -496,8 +499,29 @@ def rm(region, name, suffix):
 
     s3.delete_bucket(Bucket = bucket_name)
 
-def clean(region, name, force):
-    pass
+def clean(region, name, root):
+    if input('Please type in [iunderstanddanger]: ') != 'iunderstanddanger':
+        return print('- no confirmation, quitting')
+
+    # TODO; detach volumes before termination?
+    killall(region = region, name = name)
+    
+    #TODO: retry multiple times
+    blkdeactivate(region = region, name = name)
+
+    # vpc
+    # internet gateways
+    # route table
+    # security groups
+    # subnet
+    # keypair
+
+    rm_rf(region = reigon, name = name)
+    
+    # iam users
+    key_path = os.path.join(root, name + '.pem')
+    if os.path.exists(key_path):
+        os.remove(key_path)
 
 def datasets(name, root, region, availability_zone):
     run(region = region, availability_zone = availability_zone, name = name, shutdown_after_init_script = True)
@@ -521,6 +545,7 @@ if __name__ == '__main__':
     parser.add_argument('--job-path')
     parser.add_argument('--instance-type', deafult = 't3.mciro', choices = ['t3.micro'])
     parser.add_argument('--name'  , default = 'poehalitest80')
+    parser.add_argument('--all', action = 'store_true')
     parser.add_argument('--suffix')
     parser.add_argument('--env-path')
     parser.add_argument('--env', nargs = '*')
@@ -566,22 +591,19 @@ if __name__ == '__main__':
         mkdir(name = args.name, region = args.region, suffix = args.suffix)
     
     if args.cmd == 'rm':
-        rm(name = args.name, region = args.region, suffix = args.suffix)
+        rm_rf(name = args.name, region = args.region, suffix = args.suffix)
     
     if args.cmd == 'ls':
         ls(name = args.name, region = args.region)
     
     if args.cmd == 'clean':
-        clean(name = args.name, region = args.region)
+        clean(name = args.name, region = args.region, root = args.root)
     
     if args.cmd == 'run':
-        run(name = args.name, region = args.region, availability_zone = args.availability_zone, instance_type = args.instance_type, username = args.username, job_path = args.job_path, env = dict(kv.split('=') for kv in args.env), env_path = args.env_path)
+        run(name = args.name, region = args.region, availability_zone = args.availability_zone, instance_type = args.instance_type, username = args.username, job_path = args.job_path, env_path = args.env_path, env = dict(kv.split('=') for kv in args.env))
 
     # tar -c ./myfiles | aws s3 cp - s3://my-bucket/myobject"
     # https://docs.aws.amazon.com/cli/latest/topic/s3-config.html
     # https://www.linkedin.com/pulse/aws-s3-multipart-uploading-milind-verma
     # https://www.slideshare.net/AmazonWebServices/deep-dive-aws-command-line-interface-50367179
-    # export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE
-    # export AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
-    # export AWS_DEFAULT_REGION=us-west-2
-    # https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-envvars.html
+    # https://www.thefreedictionary.com/words-that-end-in-aw
