@@ -242,6 +242,7 @@ def run(region, availability_zone, name, instance_type = 't3.micro', image_name 
     EOF
     '''
 
+    #TODO job body under ex to eat job errors and shutdown
     if shutdown_after_init_script:
         init_script += 'sudo shutdown'
     
@@ -258,6 +259,11 @@ def run(region, availability_zone, name, instance_type = 't3.micro', image_name 
         UserData = init_script,
     )['Instances'][0]
     print('- instance is', instance['InstanceId'])
+
+    waiter = client.get_waiter('instance_running')
+    # waiter = ec2.get_waiter('network_interface_available')
+    # waiter.wait(InstanceIds = [instance['InstanceId']])
+    
     return instance['InstanceId']
 
 def ps(region, name, root):
@@ -433,7 +439,10 @@ def mkdir(region, name, suffix, retry = 5):
         cmd = 'AWS_ACCESS_KEY_ID="{AccessKeyId}" AWS_SECRET_ACCESS_KEY="{SecretAccessKey}" AWS_REGION="{region}" AWS_DEFAULT_OUTPUT="json" aws s3 ls s3:/{Location}'.format(region = region, **access_key, **bucket)
         print('- test command is\n\n', cmd, '\n')
     print('- user is', user['Arn'])
-
+    
+    waiter = iam.get_waiter('user_exists')
+    #waiter.wait(UserName = iam_username)
+    
     bucket_policy = dict(
         Version= '2012-10-17',
         Statement= [
