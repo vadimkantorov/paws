@@ -502,6 +502,15 @@ def rm_rf(region, name, suffix = None):
 def clean(region, name, root):
     if input('Please type in [iunderstanddanger]: ') != 'iunderstanddanger':
         return print('- no confirmation, quitting')
+    
+    root = os.path.expanduser(os.path.join(root, '.' + po))
+    print('- name is', name)
+    print('- region is', region)
+    print('- root is', root)
+    print()
+    
+    ec2 = boto3.client('ec2', region_name = region)
+    iam = boto3.client('iam', region_name = region)
 
     # TODO; detach volumes before termination?
     killall(region = region, name = name)
@@ -509,19 +518,28 @@ def clean(region, name, root):
     #TODO: retry multiple times
     blkdeactivate(region = region, name = name)
 
-    # vpc
-    # internet gateways
-    # route table
-    # security groups
-    # subnet
-    # keypair
+    #subnets = (ec2.describe_subnets(Filters = [dict(Name = 'tag:Name', Values = [po + '*'])])['Subnets'] + empty)
+    #route_tables = ec2.describe_route_tables(Filters = [dict(Name = 'association.subnet-id', Values = [subnet['SubnetId']])])['RouteTables'][0]['Associations']
+    #security_groups = (ec2.describe_security_groups(Filters = [dict(Name = 'group-name', Values = [name])])['SecurityGroups'] + empty)
+    #internet_gateways = (ec2.describe_internet_gateways(Filters = [dict(Name = 'attachment.vpc-id', Values = [vpc_id])])['InternetGateways'] + empty
+    #vpcs = (ec2.describe_vpcs(Filters = [dict(Name = 'tag:Name', Values = [po + '*'])])['Vpcs'] + empty)
+    #keypairs = (ec2.describe_keypairs(Filters = [dict(Name = 'tag:Name', Values = [po + '*'])])['Vpcs'] + empty)
 
     rm_rf(region = reigon, name = name)
     
     # iam users
-    key_path = os.path.join(root, name + '.pem')
-    if os.path.exists(key_path):
-        os.remove(key_path)
+    # iam role
+    # iam policy
+    # iam instance profile
+
+    if name:
+        key_path = os.path.join(root, name + '.pem')
+        if os.path.exists(key_path):
+            os.remove(key_path)
+    else:
+        for key_name in os.listdir(root):
+            os.remove(os.path.join(root, key_name))
+        os.rmdir(root)
 
 def datasets(name, root, region, availability_zone):
     run(region = region, availability_zone = availability_zone, name = name, shutdown_after_init_script = True)
