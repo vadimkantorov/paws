@@ -576,6 +576,7 @@ if __name__ == '__main__':
     parser.add_argument('--suffix')
     parser.add_argument('--env-path')
     parser.add_argument('--env', nargs = '*')
+    parser.add_argument('--env-export', nargs = '*')
     parser.add_argument('--cold-disk-size-gb', type = int, default = 0)
     parser.add_argument('--hot-disk-size-gb', type = int, default = 0)
     args = parser.parse_args()
@@ -627,7 +628,7 @@ if __name__ == '__main__':
         clean(name = args.name, region = args.region, root = args.root)
     
     if args.cmd == 'run':
-        run(name = args.name, region = args.region, availability_zone = args.availability_zone, instance_type = args.instance_type, username = args.username, job_path = args.job_path, env_path = args.env_path, env = dict(kv.split('=') for kv in args.env))
+        run(name = args.name, region = args.region, availability_zone = args.availability_zone, instance_type = args.instance_type, username = args.username, job_path = args.job_path, env_path = args.env_path, env = {**dict(kv.split('=') for kv in args.env), **{k : os.getenv(k, '') for k in args.env_export}} )
 
     # tar -c ./myfiles | aws s3 cp - s3://my-bucket/myobject"
     # https://docs.aws.amazon.com/cli/latest/topic/s3-config.html
