@@ -21,7 +21,7 @@ def random_suffix():
 def TagSpecifications(resource, name = '', suffix = ''):
     return [dict(ResourceType = resource, Tags = [dict(Key = 'Name', Value = N(name = name, suffix = suffix)  )])] 
 
-def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None, cold_disk_size_gb = 200, hot_disk_size_gb = 200, vpc_cidr = '192.168.0.0/16', public_internet_cidr = '0.0.0.0/0', iops = 100):
+def setup(name, root, region, availability_zone, cold_disk_size_gb = 200, hot_disk_size_gb = 200, cidr_public_internet = '0.0.0.0/0', iops = 100):
     root = os.path.expanduser(os.path.join(root, '.' + po))
     print('- name is', name)
     print('- region is', region)
@@ -33,38 +33,11 @@ def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None
     ec2 = boto3.client('ec2', region_name = region)
     iam = boto3.client('iam', region_name = region)
 
-    if not vpc_id:
-        vpc = (ec2.describe_vpcs(Filters = [dict(Name = 'tag:Name', Values = [po])])['Vpcs'] + ec2.describe_vpcs(Filters = [dict(Name = 'is-default', Values = ['true'])])['Vpcs'] + empty)[0]
-        if not vpc:
-            print('- vpc not found, creating')
-            try:
-                vpc = ec2.create_default_vpc()['Vpc']
-            except botocore.exceptions.ClientError as err:
-                if err.response['Error']['Code'] != 'DefaultVpcAlreadyExists':
-                    #TODO: filter out EC2-Classic not supporting default VPC
-                    vpc = ec2.create_vpc(CidrBlock = vpc_cidr, InstanceTenancy='default', TagSpecifications = TagSpecifications('vpc', name = po))['Vpc']
-        vpc_cidr = vpc['CidrBlock']
-        vpc_id = vpc['VpcId']
-    print('- vpc is', vpc_id)
-
-    if not subnet_id:
-        subnet = (ec2.describe_subnets(Filters = [dict(Name = 'availability-zone', Values = [availability_zone]), dict(Name = 'tag:Name', Values = [po])] + ec2.describe_subnets(Filters = [dict(Name = 'availability-zone', Values = [availability_zone]), dict(Name = 'default-for-az', Values = ['true'])])['Subnets'] + )['Subnets'] + empty)[0]
-        if not subnet:
-            print('- subnet not found, creating')
-            subnet = ec2.create_subnet(VpcId = vpc_id, AvailabilityZone = availability_zone, CidrBlock = vpc_cidr, TagSpecifications = TagSpecifications('subnet', name = po))['Subnet']
-            route_table_id = ec2.describe_route_tables(Filters = [dict(Name = 'association.subnet-id', Values = [subnet['SubnetId']])])['RouteTables'][0]['Associations'][0]['RouteTableId']
-            print('- route table is', route_table_id)
-            ec2.create_route(DestinationCidrBlock = cidr_public_internet, GatewayId = internet_gateway['InternetGatewayId'], RouteTableId = route_table_id)
-        subnet_id = subnet['SubnetId']
-    print('- subnet is', subnet_id)
+    vpc = (ec2.describe_vpcs(Filters = [dict(Name = 'is-default', Values = ['true'])])['Vpcs'] + empty)[0]
+    assert vpc
+    vpc_id = vpc['VpcId']
     
-    internet_gateway = (ec2.describe_internet_gateways(Filters = [dict(Name = 'attachment.vpc-id', Values = [vpc_id])])['InternetGateways'] + empty)[0]
-    if not internet_gateway:
-        print('- internet gateway not found, creating')
-        internet_gateway = ec2.create_internet_gateway(TagSpecifications = TagSpecifications('internet-gateway', name = po))['InternetGateway']
-        ec2.attach_internet_gateway(InternetGatewayId = internet_gateway['InternetGatewayId'], VpcId = vpc_id)
-    print('- internet gateway is', internet_gateway['InternetGatewayId'])
-            
+    print('- vpc is', vpc_id)
     security_group = (ec2.describe_security_groups(Filters = [dict(Name = 'vpc-id', Values = [vpc_id]), dict(Name = 'group-name', Values = [po])])['SecurityGroups'] + empty)[0]
     if not security_group:
         print('- security group not found, creating')
@@ -175,7 +148,7 @@ def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None
                 cold_disk = ec2.create_volume(VolumeType = 'io1', MultiAttachEnabled = True, AvailabilityZone = availability_zone, Size = gb, Iops = iops, TagSpecifications = TagSpecifications('volume', name = name, suffix = suffix))
         print('-', disk_name, '(', suffix, ') disk is', disk['VolumeId'])
 
-def run(region, availability_zone, name, instance_type = 't3.micro', image_name = 'ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-20210430', shutdown_after_init_script = False, username = 'ubuntu', job_path = None, job_body = '', env_path = None, env = {}, git_clone = None, git_tag = None, repo_dir = None):
+def run(region, availability_zone, name, instance_type = 't3.micro', image_name = 'ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-20210430', shutdown_after_init_script = False, username = 'ubuntu', job_path = None, job_body = '', env_path = None, env = {}, git_clone = None, git_tag = None, repo_dir = None, ssh_when_running = False):
     #TODO: support expiration
     print('- name is', name)
     print('- region is', region)
@@ -185,10 +158,8 @@ def run(region, availability_zone, name, instance_type = 't3.micro', image_name 
     
     ec2 = boto3.client('ec2', region_name = region)
         
-    vpc = (ec2.describe_vpcs(Filters = [dict(Name = 'tag:Name', Values = [po])])['Vpcs'] + ec2.describe_vpcs(Filters = [dict(Name = 'is-default', Values = ['true'])])['Vpcs'] + empty)[0]
-    subnet = (ec2.describe_subnets(Filters = [dict(Name = 'availability-zone', Values = [availability_zone]), dict(Name = 'tag:Name', Values = [po])] + ec2.describe_subnets(Filters = [dict(Name = 'availability-zone', Values = [availability_zone]), dict(Name = 'default-for-az', Values = ['true'])])['Subnets'] + )['Subnets'] + empty)[0]
-    assert vpc and subnet
-    print('- vpc is', vpc.get('VpcId'))
+    subnet = (ec2.describe_subnets(Filters = [dict(Name = 'availability-zone', Values = [availability_zone]), dict(Name = 'default-for-az', Values = ['true'])])['Subnets'] + empty)[0]
+    assert subnet
     print('- subnet is', subnet.get('SubnetId'))
     
     security_group = (ec2.describe_security_groups(Filters = [dict(Name = 'vpc-id', Values = [vpc['VpcId']]), dict(Name = 'group-name', Values = [po])])['SecurityGroups'] + empty)[0]
@@ -206,7 +177,8 @@ def run(region, availability_zone, name, instance_type = 't3.micro', image_name 
         **({f'/home/{username}/experiments' : volume_hot ['VolumeId'] } if volume_hot  else {})
     }
     
-    init_script = '''#!/bin/bash -ex
+    init_script = '''#!/bin/bash
+    set -ex
     exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
     sudo apt update
     sudo apt install -y awscli git wget
@@ -232,7 +204,7 @@ def run(region, availability_zone, name, instance_type = 't3.micro', image_name 
     init_script += '\n'.join(f'export {k}="{v}"' for k, v in env.items()) + '\n'
     
     if git_clone:
-        job_bidy = 'git clone --single-branch --depth 1' + (f' --branch "{git_tag}" ' if git_tag else '') + ' "{git_clone}"' + (f' "{repo_dir}"' if repo_dir else '') + '\n' + job_body
+        job_body = 'git clone --single-branch --depth 1' + (f' --branch "{git_tag}" ' if git_tag else '') + ' "{git_clone}"' + (f' "{repo_dir}"' if repo_dir else '') + '\n' + job_body
 
     if job_path:
         with open(job_path) as f:
@@ -240,9 +212,11 @@ def run(region, availability_zone, name, instance_type = 't3.micro', image_name 
 
     if job_body:
         init_script += f'''
+    set +e
     sudo -i -u {username} bash - << EOF
     {job_body}
     EOF
+    set -e
     '''
 
     #TODO job body under ex to eat job errors and shutdown
@@ -263,9 +237,8 @@ def run(region, availability_zone, name, instance_type = 't3.micro', image_name 
     )['Instances'][0]
     print('- instance is', instance['InstanceId'])
 
-    waiter = client.get_waiter('instance_running')
-    # waiter = ec2.get_waiter('network_interface_available')
-    # waiter.wait(InstanceIds = [instance['InstanceId']])
+    if ssh_when_running:
+        ssh(region = region, name = name, root = root, instance_id = instance['InstanceId'], username = username):
     
     return instance['InstanceId']
 
@@ -324,6 +297,8 @@ def ssh(region, name, root, instance_id = None, username = 'ubuntu', scp = False
     print('- region is', region)
     print('- root is', root)
     ec2 = boto3.client('ec2', region_name = region)
+
+    key_path = os.path.join(root, f'{name}_{region}.pem')
     
     instance = {}
     if not instance_id:
@@ -341,17 +316,20 @@ def ssh(region, name, root, instance_id = None, username = 'ubuntu', scp = False
     print('- instance is', instance.get('InstanceId'))
     assert instance
     
+    ec2.get_waiter('instance_running').wait(InstanceIds = [instance['InstanceId']])
+    ec2.get_waiter('network_interface_available').wait(InstanceIds = [instance['InstanceId']])
+    
     public_ip = instance.get('PublicIpAddress')
     print('- ip is', public_ip)
     #TODO: implement waiting for public IP and for disks ready
     assert public_ip
 
-    cmd = ['ssh' if not scp else 'scp', '-o', 'StrictHostKeyChecking=no', '-i', os.path.join(root, name + '.pem'), f'{username}@{public_ip}']
+    cmd = ['ssh' if not scp else 'scp', '-o', 'StrictHostKeyChecking=no', '-i', key_path, f'{username}@{public_ip}']
     print(' '.join(c if ' ' not in c else f'"{c}"' for c in cmd))
     print()
 
     if not scp:
-        subprocess.call(['chmod', '600', os.path.join(root, name + '.pem')])
+        subprocess.call(['chmod', '600', key_path])
         subprocess.call(cmd)
 
 def help(region):
@@ -443,8 +421,7 @@ def mkdir(region, name, suffix, retry = 5):
         print('- test command is\n\n', cmd, '\n')
     print('- user is', user['Arn'])
     
-    waiter = iam.get_waiter('user_exists')
-    #waiter.wait(UserName = iam_username)
+    iam.get_waiter('user_exists').wait(UserName = iam_username)
     
     bucket_policy = dict(
         Version= '2012-10-17',
@@ -595,9 +572,8 @@ if __name__ == '__main__':
     parser.add_argument('--availability-zone', default = 'us-east-1a')
     parser.add_argument('--name'  , default = 'poehalitest81')
     parser.add_argument('--username', default = 'ubuntu')
-    parser.add_argument('--vpc-id')
-    parser.add_argument('--subnet-id')
     parser.add_argument('--instance-id')
+    parser.add_argument('--ssh', dest = 'ssh_when_running', action = 'store_true')
     parser.add_argument('--root', default = '~')
     parser.add_argument('--job-path')
     parser.add_argument('--instance-type', default = 't3.mciro', choices = ['t3.micro'])
@@ -635,7 +611,7 @@ if __name__ == '__main__':
         ssh(region = args.region, name = args.name, root = args.root, instance_id = args.instance_id, scp = True)
 
     if args.cmd == 'setup':
-        setup(name = args.name, region = args.region, root = args.root, availability_zone = args.availability_zone, vpc_id = args.vpc_id, cold_disk_size_gb = args.cold_disk_size_gb, hot_disk_size_gb = args.hot_disk_size_gb)
+        setup(name = args.name, region = args.region, root = args.root, availability_zone = args.availability_zone, cold_disk_size_gb = args.cold_disk_size_gb, hot_disk_size_gb = args.hot_disk_size_gb)
     
     if args.cmd == 'micro':
         instanceid = micro(name = args.name, region = args.region, availability_zone = args.availability_zone, instance_type = 't3.micro', username = args.username)
@@ -657,7 +633,7 @@ if __name__ == '__main__':
         clean(name = args.name, region = args.region, root = args.root)
     
     if args.cmd == 'run':
-        run(name = args.name, region = args.region, availability_zone = args.availability_zone, instance_type = args.instance_type, username = args.username, job_path = args.job_path, env_path = args.env_path, env = {**dict(kv.split('=') for kv in args.env), **{k : os.getenv(k, '') for k in args.env_export}} )
+        run(name = args.name, region = args.region, availability_zone = args.availability_zone, instance_type = args.instance_type, username = args.username, job_path = args.job_path, env_path = args.env_path, env = {**dict(kv.split('=') for kv in args.env), **{k : os.getenv(k, '') for k in args.env_export}}, ssh_when_running = args.ssh_when_running )
 
     # tar -c ./myfiles | aws s3 cp - s3://my-bucket/myobject"
     # https://docs.aws.amazon.com/cli/latest/topic/s3-config.html
