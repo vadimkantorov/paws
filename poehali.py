@@ -15,14 +15,17 @@ empty = [{}]
 def N(name = '', resource = '', suffix = '', sep = '_'):
     return po + (sep + name if name else '') + (sep + resource if resource else '') + (sep + suffix if suffix else '')
 
+def R(root):
+    return os.path.abspath(os.path.expanduser(os.path.join(root, '.' + po))) if not root.startswith('/') else root 
+
 def random_suffix():
     return ''.join(random.choices(string.ascii_uppercase.lower(), k = 4))
 
 def TagSpecifications(resource, name = '', suffix = ''):
     return [dict(ResourceType = resource, Tags = [dict(Key = 'Name', Value = N(name = name, suffix = suffix)  )])] 
 
-def setup(name, root, region, availability_zone, cold_disk_size_gb = 200, hot_disk_size_gb = 200, cidr_public_internet = '0.0.0.0/0', iops = 100):
-    root = os.path.expanduser(os.path.join(root, '.' + po))
+def setup(name, root, region, availability_zone, cold_disk_size_gb = 200, hot_disk_size_gb = 200, cidr_public_internet = '0.0.0.0/0', iops = 100, cold_bucket = False, hot_bucket = False):
+    root = R(root)
     print('- name is', name)
     print('- region is', region)
     print('- availability zone is', availability_zone)
@@ -45,8 +48,8 @@ def setup(name, root, region, availability_zone, cold_disk_size_gb = 200, hot_di
         ec2.authorize_security_group_ingress(GroupId = security_group['GroupId'], IpPermissions = [dict(IpProtocol = 'tcp', FromPort = 22, ToPort = 22, IpRanges = [dict(CidrIp = cidr_public_internet)])])
     print('- security group is', security_group['GroupId'])
     
-    key_path = os.path.join(root, f'{name}_{region}.pem')
-    if not os.path.exists(key_path):
+    sshkey_path = os.path.join(root, f'{name}_{region}.pem')
+    if not os.path.exists(sshkey_path):
         print('- key does not exist, creating')
         key_name = N(name = name)
         try:
@@ -56,13 +59,30 @@ def setup(name, root, region, availability_zone, cold_disk_size_gb = 200, hot_di
                 key_name = N(name = name, suffix = random_suffix())
                 key_pair = ec2.create_key_pair(KeyName = key_name)
 
-        with open(key_path, 'w') as f:
+        with open(sshkey_path, 'w') as f:
             f.write(key_pair['KeyMaterial'])
         
-        #os.chmod(key_path, 600)
-        subprocess.call(['chmod', '600', key_path])
+        #os.chmod(sshkey_path, 600)
+        subprocess.call(['chmod', '600', sshkey_path])
 
-    print('- key at', key_path)
+    print('- key at', sshkey_path)
+    
+    iamkey_path = sshkey_path.replace('.pem', '.ini')
+    try:
+        user = iam.get_user(UserName = name)['User']
+    except:
+        print('- user does not exist, creating')
+        user = iam.create_user(UserName = name)['User']
+        access_key = iam.create_access_key(UserName = name)['AccessKey']
+        print('- access key is', access_key['AccessKeyId'])
+        
+        with open(iamkey_path, 'w') as f:
+            f.write('[default]\naws_access_key_id = {AccessKeyId}\naws_secret_access_key = {SecretAccessKey}\n'.format(**access_key))
+            
+    print('- user is', user['Arn'])
+    print('- access key backup is', iamkey_path)
+    print('- waiting for user to exist')
+    iam.get_waiter('user_exists').wait(UserName = name)
 
     #policy_arn = [p for p in iam.list_policies(Scope = 'AWS', PathPrefix = '/service-role/')['Policies'] if p['PolicyName'] == 'AmazonEC2RoleforSSM'][0]['Arn']
 
@@ -138,15 +158,22 @@ def setup(name, root, region, availability_zone, cold_disk_size_gb = 200, hot_di
         iam.add_role_to_instance_profile(InstanceProfileName = name, RoleName = name)
     print('- instance profile is', instance_profile['InstanceProfile']['Arn'])
 
-    disk_spec = dict(cold = ('datasets', cold_disk_size_gb), hot = ('experiments', hot_disk_size_gb))
-    for disk_name, (suffix, gb) in disk_spec.items():
-        disk = (ec2.describe_volumes(Filters = [dict(Name = 'tag:Name', Values = [N(name = name, suffix = suffix)])])['Volumes'] + empty)[0]
+    bucket_spec = dict(cold = cold_bucket, hot = hot_bucket)
+    for bucket_suffix, enabled in bucket_spec.items():
+        if enabled:
+            mkdir(name = name, region = region, suffix = bucket_suffix, root = root)
+        else:
+            print('- bucket is disabled', bucket_suffix)
+
+    disk_spec = dict(cold = cold_disk_size_gb, hot = hot_disk_size_gb)
+    for bucket_suffix, gb in disk_spec.items():
+        disk = (ec2.describe_volumes(Filters = [dict(Name = 'tag:Name', Values = [N(name = name, suffix = bucket_suffix)])])['Volumes'] + empty)[0]
         if not disk:
             disk = dict(VolumeId = 'disabled')
             if gb:
-                print('-', disk_name, '(', suffix, ') disk not found, creating', gb, 'gb')
-                cold_disk = ec2.create_volume(VolumeType = 'io1', MultiAttachEnabled = True, AvailabilityZone = availability_zone, Size = gb, Iops = iops, TagSpecifications = TagSpecifications('volume', name = name, suffix = suffix))
-        print('-', disk_name, '(', suffix, ') disk is', disk['VolumeId'])
+                print('-', suffix, 'disk not found, creating', gb, 'gb')
+                disk = ec2.create_volume(VolumeType = 'io1', MultiAttachEnabled = True, AvailabilityZone = availability_zone, Size = gb, Iops = iops, TagSpecifications = TagSpecifications('volume', name = name, suffix = bucket_suffix))
+        print('- disk', bucket_suffix, 'is', disk['VolumeId'])
 
 def run(region, availability_zone, name, instance_type = 't3.micro', image_name = 'ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-20210430', shutdown_after_init_script = False, username = 'ubuntu', job_path = None, job_body = '', env_path = None, env = {}, git_clone = None, git_tag = None, repo_dir = None, ssh_when_running = False):
     #TODO: support expiration
@@ -238,12 +265,12 @@ def run(region, availability_zone, name, instance_type = 't3.micro', image_name 
     print('- instance is', instance['InstanceId'])
 
     if ssh_when_running:
-        ssh(region = region, name = name, root = root, instance_id = instance['InstanceId'], username = username):
+        ssh(region = region, name = name, root = root, instance_id = instance['InstanceId'], username = username)
     
     return instance['InstanceId']
 
 def ps(region, name, root):
-    root = os.path.expanduser(os.path.join(root, '.' + po))
+    root = R(root)
     print('- name is', name)
     print('- region is', region)
     print('- root is', root)
@@ -292,7 +319,7 @@ def killall(region, name = None):
     ec2.terminate_instances(InstanceIds = instance_ids)
 
 def ssh(region, name, root, instance_id = None, username = 'ubuntu', scp = False):
-    root = os.path.expanduser(os.path.join(root, '.' + po))
+    root = R(root)
     print('- name is', name)
     print('- region is', region)
     print('- root is', root)
@@ -316,7 +343,9 @@ def ssh(region, name, root, instance_id = None, username = 'ubuntu', scp = False
     print('- instance is', instance.get('InstanceId'))
     assert instance
     
+    print('- waiting until instance is running')
     ec2.get_waiter('instance_running').wait(InstanceIds = [instance['InstanceId']])
+    print('- waiting until instance has available network interface')
     ec2.get_waiter('network_interface_available').wait(InstanceIds = [instance['InstanceId']])
     
     public_ip = instance.get('PublicIpAddress')
@@ -390,38 +419,45 @@ def ls(region, name):
             num_objects = sum(page['KeyCount'] for page in paginator_list_objects_v2.paginate(Bucket = bucket['Name'], Delimiter = '/'))
             print('- bucket is', 's3://' + bucket['Name'], '| file count is', num_objects)
 
-def mkdir(region, name, suffix, retry = 5):
+def mkdir(region, name, suffix, retry = 5, root = None):
     print('- name is', name)
     print('- region is', region)
     s3 = boto3.client('s3', region_name = region)
     iam = boto3.client('iam', region_name = region)
     if suffix == '':
         suffix = random_suffix()
-
+    print('- waiting for iam user to exist')
     bucket_name = N(name = name, suffix = suffix).lower().replace('_', '-')
     print('- bucket name is', bucket_name)
     
     if any(bucket['Name'] == bucket_name for bucket in s3.list_buckets()['Buckets']):
-        return print('- bucket exists, quitting')
+        return print('- bucket exists', 's3://' + bucket_name, ', quitting')
+    
+    try:
+        user = iam.get_user(UserName = name)['User']
+    except:
+        return print('- user does not exist, quitting')
+
+    iam.get_waiter('user_exists').wait(UserName = name)
+    print('- user is', user['Arn'])
     
     bucket_configuration_kwargs = dict(CreateBucketConfiguration = dict(LocationConstraint = region)) if not region.startswith('us-east-1') else {}
     bucket = s3.create_bucket(Bucket = bucket_name, **bucket_configuration_kwargs)
     print('- bucket is', 's3:/' + bucket['Location'])
     print('- listing is', f'https://s3.amazonaws.com/{bucket_name}/')
     
-    iam_username = name
-    try:
-        user = iam.get_user(UserName = iam_username)['User']
-    except:
-        print('- user does not exist, creating')
-        user = iam.create_user(UserName = iam_username)['User']
-        access_key = iam.create_access_key(UserName = iam_username)['AccessKey']
-        print('- access key is', access_key['AccessKeyId']) 
-        cmd = 'AWS_ACCESS_KEY_ID="{AccessKeyId}" AWS_SECRET_ACCESS_KEY="{SecretAccessKey}" AWS_REGION="{region}" AWS_DEFAULT_OUTPUT="json" aws s3 ls s3:/{Location}'.format(region = region, **access_key, **bucket)
+    if root:
+        root = R(root)
+        iamkey_path = os.path.join(root, f'{name}_{region}.ini')
+        if os.path.exists(iamkey_path):
+            with open(iamkey_path) as f:
+                access_key_ini = dict(line.strip().split(' = ') for line in f.read().split('\n')[1:3])
+        else:
+            iamkey_path = os.path.basename(iamkey_path)
+            access_key_ini = dict(aws_access_key_id = f'<{iamkey_path} not found>', aws_secret_access_key = f'<{iamkey_path} not found>')
+
+        cmd = 'AWS_ACCESS_KEY_ID="{aws_access_key_id}" AWS_SECRET_ACCESS_KEY="{aws_secret_access_key}" AWS_REGION="{region}" AWS_DEFAULT_OUTPUT="json" aws s3 ls s3:/{Location}'.format(region = region, **access_key_ini, **bucket)
         print('- test command is\n\n', cmd, '\n')
-    print('- user is', user['Arn'])
-    
-    iam.get_waiter('user_exists').wait(UserName = iam_username)
     
     bucket_policy = dict(
         Version= '2012-10-17',
@@ -454,7 +490,7 @@ def mkdir(region, name, suffix, retry = 5):
     for k in range(retry):
         try:
             # policy = iam.create_policy(PolicyName=policy_name, PolicyDocument=json.dumps(bucket_policy))
-            # print(iam.attach_user_policy(UserName=iam_username, PolicyArn=policy['Policy']['Arn']))
+            # print(iam.attach_user_policy(UserName=name, PolicyArn=policy['Policy']['Arn']))
             s3.put_bucket_policy(Bucket = bucket_name, Policy = json.dumps(bucket_policy))
         except Exception as e:
             if 'Invalid principal in policy' in str(e):
@@ -492,7 +528,7 @@ def clean(region, name, root):
     if input('Please type in [iunderstanddanger]: ') != 'iunderstanddanger':
         return print('- no confirmation, quitting')
     
-    root = os.path.expanduser(os.path.join(root, '.' + po))
+    root = R(root)
     print('- name is', name)
     print('- region is', region)
     print('- root is', root)
@@ -515,27 +551,6 @@ def clean(region, name, root):
         
         for security_group in ec2.describe_security_groups(Filters = [dict(Name = 'group-name', Values = [po])])['SecurityGroups']:
             ec2.delete_security_group(GroupName = security_group['GroupName'])
-        
-        for internet_gateway in ec2.describe_internet_gateways(Filters = [dict(Name = 'tag:Name', Values = [po])])['InternetGateways']:
-            for attachment in internet_gateway['Attachments']:
-                #TODO: check for 'State': 'attaching'|'attached'|'detaching'|'detached',
-                # The VPC must not contain any running instances with Elastic IP addresses or public IPv4 addresses.
-                ec2.detach_internet_gateway(InternetGatewayId = internet_gateway['InternetGatewayId'], VpcId = attachment['VpcId'])
-            # TODO: wait until all detached
-            ec2.delete_internet_gateway(internetgatewayid = internet_gateway['internetgatewayid'])
-        
-        for route_table in ec2.describe_route_tables(Filters = [dict(Name = 'tag:Name', Values = [po])])['RouteTables']:
-            for association in route_table['Associations']:
-                #TODO: check for AssociationState 'State': 'associating'|'associated'|'disassociating'|'disassociated'|'failed',
-                ec2.disassociate_route_table(AssociationId = association['RouteTableAssociationId'])
-            # TODO: wait until all disassociated
-            ec2.delete_route_table(RouteTableId = route_table['RouteTableId'])
-                
-        for subnets in ec2.describe_subnets(Filters = [dict(Name = 'tag:Name', Values = [po])])['Subnets']:
-            ec2.delete_subnet(SubnetId = subnet['SubnetId'])
-
-        for vpc in ec2.describe_vpcs(Filters = [dict(Name = 'tag:Name', Values = [po])])['Vpcs']:
-            ec2.delete_vpc(VpcId = vpc['VpcId'])
     
     for key_name in key_pair_names:    
         ec2.delete_key_pair(KeyName = key_name)
@@ -570,7 +585,7 @@ if __name__ == '__main__':
     parser.add_argument('cmd', choices = ['help', 'ps', 'lsblk', 'blkdeactivate', 'kill', 'killall', 'ssh', 'scp', 'setup', 'micro', 'datasets', 'mkdir', 'ls', 'rm', 'clean', 'run'])
     parser.add_argument('--region', default = 'us-east-1')
     parser.add_argument('--availability-zone', default = 'us-east-1a')
-    parser.add_argument('--name'  , default = 'poehalitest81')
+    parser.add_argument('--name'  , default = 'poehalitest82')
     parser.add_argument('--username', default = 'ubuntu')
     parser.add_argument('--instance-id')
     parser.add_argument('--ssh', dest = 'ssh_when_running', action = 'store_true')
@@ -584,6 +599,8 @@ if __name__ == '__main__':
     parser.add_argument('--env-export', nargs = '*')
     parser.add_argument('--cold-disk-size-gb', type = int, default = 0)
     parser.add_argument('--hot-disk-size-gb', type = int, default = 0)
+    parser.add_argument('--cold-bucket', action = 'store_true')
+    parser.add_argument('--hot-bucket', action = 'store_true')
     args = parser.parse_args()
     
     if args.cmd == 'help':
@@ -611,7 +628,7 @@ if __name__ == '__main__':
         ssh(region = args.region, name = args.name, root = args.root, instance_id = args.instance_id, scp = True)
 
     if args.cmd == 'setup':
-        setup(name = args.name, region = args.region, root = args.root, availability_zone = args.availability_zone, cold_disk_size_gb = args.cold_disk_size_gb, hot_disk_size_gb = args.hot_disk_size_gb)
+        setup(name = args.name, region = args.region, root = args.root, availability_zone = args.availability_zone, cold_disk_size_gb = args.cold_disk_size_gb, hot_disk_size_gb = args.hot_disk_size_gb, cold_bucket = args.cold_bucket, hot_bucket = args.hot_bucket)
     
     if args.cmd == 'micro':
         instanceid = micro(name = args.name, region = args.region, availability_zone = args.availability_zone, instance_type = 't3.micro', username = args.username)
