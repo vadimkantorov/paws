@@ -34,24 +34,24 @@ def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None
     iam = boto3.client('iam', region_name = region)
 
     if not vpc_id:
-        vpc = (ec2.describe_vpcs(Filters = [dict(Name = 'tag:Name', Values = [po])])['Vpcs'] + empty)[0]
+        vpc = (ec2.describe_vpcs(Filters = [dict(Name = 'is-default', Values = ['true'])])['Vpcs'] + ec2.describe_vpcs(Filters = [dict(Name = 'tag:Name', Values = [po])])['Vpcs'] + empty)[0]
         if not vpc:
             print('- vpc not found, creating')
             try:
                 vpc = ec2.create_default_vpc()['Vpc']
             except botocore.exceptions.ClientError as err:
-                print(err)
-                #TODO: filter out EC2-Classic not supporting default VPC
-                vpc = ec2.create_vpc(CidrBlock = cidr_vpc, InstanceTenancy='default', TagSpecifications = TagSpecifications('vpc', name = po))['Vpc']
+                if err.response['Error']['Code'] != 'DefaultVpcAlreadyExists':
+                    #TODO: filter out EC2-Classic not supporting default VPC
+                    vpc = ec2.create_vpc(CidrBlock = cidr_vpc, InstanceTenancy='default', TagSpecifications = TagSpecifications('vpc', name = po))['Vpc']
         vpc_id = vpc['VpcId']
-            
-        security_group = (ec2.describe_security_groups(Filters = [dict(Name = 'vpc-id', Values = [vpc_id]), dict(Name = 'group-name', Values = [po])])['SecurityGroups'] + empty)[0]
-        if not security_group:
-            print('- security group not found, creating')
-            security_group = ec2.create_security_group(GroupName = po, Description = po, VpcId = vpc_id, TagSpecifications = TagSpecifications('security-group', name = po))
-            ec2.authorize_security_group_ingress(GroupId = security_group['GroupId'], IpPermissions = [dict(IpProtocol = 'tcp', FromPort = 22, ToPort = 22, IpRanges = [dict(CidrIp = cidr_public_internet)])])
-            print('- security group is', security_group['GroupId'])
     print('- vpc is', vpc_id)
+            
+    security_group = (ec2.describe_security_groups(Filters = [dict(Name = 'vpc-id', Values = [vpc_id]), dict(Name = 'group-name', Values = [po])])['SecurityGroups'] + empty)[0]
+    if not security_group:
+        print('- security group not found, creating')
+        security_group = ec2.create_security_group(GroupName = po, Description = po, VpcId = vpc_id, TagSpecifications = TagSpecifications('security-group', name = po))
+        ec2.authorize_security_group_ingress(GroupId = security_group['GroupId'], IpPermissions = [dict(IpProtocol = 'tcp', FromPort = 22, ToPort = 22, IpRanges = [dict(CidrIp = cidr_public_internet)])])
+    print('- security group is', security_group['GroupId'])
 
     internet_gateway = (ec2.describe_internet_gateways(Filters = [dict(Name = 'attachment.vpc-id', Values = [vpc_id])])['InternetGateways'] + empty)[0]
     if not internet_gateway:
@@ -600,7 +600,7 @@ if __name__ == '__main__':
     parser.add_argument('--instance-id')
     parser.add_argument('--root', default = '~')
     parser.add_argument('--job-path')
-    parser.add_argument('--instance-type', deafult = 't3.mciro', choices = ['t3.micro'])
+    parser.add_argument('--instance-type', default = 't3.mciro', choices = ['t3.micro'])
     parser.add_argument('--all', action = 'store_true')
     parser.add_argument('--suffix')
     parser.add_argument('--env-path')
