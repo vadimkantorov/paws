@@ -32,16 +32,55 @@ def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None
 
     ec2 = boto3.client('ec2', region_name = region)
     iam = boto3.client('iam', region_name = region)
-    empty = [{}]
 
-    key_path = os.path.join(root, name + '.pem')
+    if not vpc_id:
+        vpc = (ec2.describe_vpcs(Filters = [dict(Name = 'tag:Name', Values = [po])])['Vpcs'] + empty)[0]
+        if not vpc:
+            print('- vpc not found, creating')
+            try:
+                vpc = ec2.create_default_vpc()['Vpc']
+            except botocore.exceptions.ClientError as err:
+                print(err)
+                #TODO: filter out EC2-Classic not supporting default VPC
+                vpc = ec2.create_vpc(CidrBlock = cidr_vpc, InstanceTenancy='default', TagSpecifications = TagSpecifications('vpc', name = po))['Vpc']
+        vpc_id = vpc['VpcId']
+            
+        security_group = (ec2.describe_security_groups(Filters = [dict(Name = 'vpc-id', Values = [vpc_id]), dict(Name = 'group-name', Values = [po])])['SecurityGroups'] + empty)[0]
+        if not security_group:
+            print('- security group not found, creating')
+            security_group = ec2.create_security_group(GroupName = po, Description = po, VpcId = vpc_id, TagSpecifications = TagSpecifications('security-group', name = po))
+            ec2.authorize_security_group_ingress(GroupId = security_group['GroupId'], IpPermissions = [dict(IpProtocol = 'tcp', FromPort = 22, ToPort = 22, IpRanges = [dict(CidrIp = cidr_public_internet)])])
+            print('- security group is', security_group['GroupId'])
+    print('- vpc is', vpc_id)
+
+    internet_gateway = (ec2.describe_internet_gateways(Filters = [dict(Name = 'attachment.vpc-id', Values = [vpc_id])])['InternetGateways'] + empty)[0]
+    if not internet_gateway:
+        print('- internet gateway not found, creating')
+        internet_gateway = ec2.create_internet_gateway(TagSpecifications = TagSpecifications('internet-gateway', name = po))['InternetGateway']
+        ec2.attach_internet_gateway(InternetGatewayId = internet_gateway['InternetGatewayId'], VpcId = vpc_id)
+    print('- internet gateway is', internet_gateway['InternetGatewayId'])
+
+    if not subnet_id:
+        subnet = (ec2.describe_subnets(Filters = [dict(Name = 'availability-zone', Values = [availability_zone]), dict(Name = 'tag:Name', Values = [po])])['Subnets'] + empty)[0]
+        if not subnet:
+            print('- subnet not found, creating')
+            subnet = ec2.create_subnet(VpcId = vpc_id, AvailabilityZone = availability_zone, CidrBlock = cidr_vpc, TagSpecifications = TagSpecifications('subnet', name = po))['Subnet']
+            route_table_id = ec2.describe_route_tables(Filters = [dict(Name = 'association.subnet-id', Values = [subnet['SubnetId']])])['RouteTables'][0]['Associations'][0]['RouteTableId']
+            print('- route table is', route_table_id)
+            ec2.create_route(DestinationCidrBlock = cidr_public_internet, GatewayId = internet_gateway['InternetGatewayId'], RouteTableId = route_table_id)
+        subnet_id = subnet['SubnetId']
+    print('- subnet is', subnet_id)
+    
+    key_path = os.path.join(root, f'{name}_{region}.pem')
     if not os.path.exists(key_path):
         print('- key does not exist, creating')
+        key_name = N(name = name)
         try:
-            key_pair = ec2.create_key_pair(KeyName = name)
+            key_pair = ec2.create_key_pair(KeyName = key_name)
         except botocore.exceptions.ClientError as err:
             if err.response['Error']['Code'] == 'InvalidKeyPair.Duplicate':
-                key_pair = ec2.create_key_pair(KeyName = N(name = name, suffix = random_suffix()) )
+                key_name = N(name = name, suffix = random_suffix())
+                key_pair = ec2.create_key_pair(KeyName = key_name)
 
         with open(key_path, 'w') as f:
             f.write(key_pair['KeyMaterial'])
@@ -51,43 +90,6 @@ def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None
 
     print('- key at', key_path)
 
-    if not vpc_id:
-        vpc = (ec2.describe_vpcs(Filters = [dict(Name = 'tag:Name', Values = [po + '*'])])['Vpcs'] + empty)[0]
-        if not vpc:
-            print('- vpc not found, creating')
-            try:
-                vpc = ec2.create_default_vpc()['Vpc']
-            except botocore.exceptions.ClientError as err:
-                print(err)
-                #TODO: filter out EC2-Classic not supporting default VPC
-                vpc = ec2.create_vpc(CidrBlock = cidr_vpc, InstanceTenancy='default', TagSpecifications = TagSpecifications('vpc'))['Vpc']
-        vpc_id = vpc['VpcId']
-            
-        security_group = (ec2.describe_security_groups(Filters = [dict(Name = 'vpc-id', Values = [vpc_id]), dict(Name = 'group-name', Values = [name])])['SecurityGroups'] + empty)[0]
-        if not security_group:
-            print('- security group not found, creating')
-            security_group = ec2.create_security_group(GroupName = name, Description = name, VpcId = vpc_id, TagSpecifications = TagSpecifications('security-group'))
-            ec2.authorize_security_group_ingress(GroupId = security_group['GroupId'], IpPermissions = [dict(IpProtocol = 'tcp', FromPort = 22, ToPort = 22, IpRanges = [dict(CidrIp = cidr_public_internet)])])
-            print('- security group is', security_group['GroupId'])
-    print('- vpc is', vpc_id)
-
-    internet_gateway = (ec2.describe_internet_gateways(Filters = [dict(Name = 'attachment.vpc-id', Values = [vpc_id])])['InternetGateways'] + empty)[0]
-    if not internet_gateway:
-        print('- internet gateway not found, creating')
-        internet_gateway = ec2.create_internet_gateway(TagSpecifications = TagSpecifications('internet-gateway'))['InternetGateway']
-        ec2.attach_internet_gateway(InternetGatewayId = internet_gateway['InternetGatewayId'], VpcId = vpc_id)
-    print('- internet gateway is', internet_gateway['InternetGatewayId'])
-
-    if not subnet_id:
-        subnet = (ec2.describe_subnets(Filters = [dict(Name = 'availability-zone', Values = [availability_zone]), dict(Name = 'tag:Name', Values = [po + '*'])])['Subnets'] + empty)[0]
-        if not subnet:
-            print('- subnet not found, creating')
-            subnet = ec2.create_subnet(VpcId = vpc_id, AvailabilityZone = availability_zone, CidrBlock = cidr_vpc, TagSpecifications = TagSpecifications('subnet'))['Subnet']
-            route_table_id = ec2.describe_route_tables(Filters = [dict(Name = 'association.subnet-id', Values = [subnet['SubnetId']])])['RouteTables'][0]['Associations'][0]['RouteTableId']
-            print('- route table is', route_table_id)
-            ec2.create_route(DestinationCidrBlock = cidr_public_internet, GatewayId = internet_gateway['InternetGatewayId'], RouteTableId = route_table_id)
-        subnet_id = subnet['SubnetId']
-    print('- subnet is', subnet_id)
 
     #policy_arn = [p for p in iam.list_policies(Scope = 'AWS', PathPrefix = '/service-role/')['Policies'] if p['PolicyName'] == 'AmazonEC2RoleforSSM'][0]['Arn']
 
@@ -174,6 +176,7 @@ def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None
         print('-', disk_name, '(', suffix, ') disk is', disk['VolumeId'])
 
 def run(region, availability_zone, name, instance_type = 't3.micro', image_name = 'ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-20210430', shutdown_after_init_script = False, username = 'ubuntu', job_path = None, job_body = '', env_path = None, env = {}, git_clone = None, git_tag = None, repo_dir = None):
+    #TODO: support expiration
     print('- name is', name)
     print('- region is', region)
     print('- availability zone is', availability_zone)
@@ -183,12 +186,12 @@ def run(region, availability_zone, name, instance_type = 't3.micro', image_name 
     ec2 = boto3.client('ec2', region_name = region)
     
     vpc = (ec2.describe_vpcs(Filters = [dict(Name = 'tag:Name', Values = [po + '*'])])['Vpcs'] + empty)[0]
-    subnet = (ec2.describe_subnets(Filters = [dict(Name = 'availability-zone', Values = [availability_zone]), dict(Name = 'tag:Name', Values = [po + '*'])])['Subnets'] + empty)[0]
+    subnet = (ec2.describe_subnets(Filters = [dict(Name = 'availability-zone', Values = [availability_zone]), dict(Name = 'tag:Name', Values = [po])])['Subnets'] + empty)[0]
     assert vpc and subnet
     print('- vpc is', vpc.get('VpcId'))
     print('- subnet is', subnet.get('SubnetId'))
     
-    security_group = (ec2.describe_security_groups(Filters = [dict(Name = 'vpc-id', Values = [vpc['VpcId']]), dict(Name = 'group-name', Values = [name])])['SecurityGroups'] + empty)[0]
+    security_group = (ec2.describe_security_groups(Filters = [dict(Name = 'vpc-id', Values = [vpc['VpcId']]), dict(Name = 'group-name', Values = [po])])['SecurityGroups'] + empty)[0]
     image = (ec2.describe_images(Filters = [dict(Name = 'name', Values = [image_name])])['Images'] + empty)[0]
     assert security_group and image 
     print('- security group is', security_group.get('GroupId'))
@@ -522,19 +525,43 @@ def clean(region, name, root):
     iam = boto3.client('iam', region_name = region)
 
     # TODO; detach volumes before termination?
-    killall(region = region, name = name)
+    #killall(region = region, name = name)
     
     #TODO: retry multiple times
-    blkdeactivate(region = region, name = name)
+    #blkdeactivate(region = region, name = name)
 
-    #subnets = (ec2.describe_subnets(Filters = [dict(Name = 'tag:Name', Values = [po + '*'])])['Subnets'] + empty)
-    #route_tables = ec2.describe_route_tables(Filters = [dict(Name = 'association.subnet-id', Values = [subnet['SubnetId']])])['RouteTables'][0]['Associations']
-    #security_groups = (ec2.describe_security_groups(Filters = [dict(Name = 'group-name', Values = [name])])['SecurityGroups'] + empty)
-    #internet_gateways = (ec2.describe_internet_gateways(Filters = [dict(Name = 'attachment.vpc-id', Values = [vpc_id])])['InternetGateways'] + empty
-    #vpcs = (ec2.describe_vpcs(Filters = [dict(Name = 'tag:Name', Values = [po + '*'])])['Vpcs'] + empty)
-    #keypairs = (ec2.describe_keypairs(Filters = [dict(Name = 'tag:Name', Values = [po + '*'])])['Vpcs'] + empty)
+    #rm_rf(region = reigon, name = name)
 
-    rm_rf(region = reigon, name = name)
+    key_pair_names = [key['Name'] for key in ec2.describe_keypairs(Filters = [dict(Name = 'tag:Name', Values = [N(name = name) + '*'])])['KeyPairs']]
+    if not name:
+        key_pair_names = [key['Name'] for key in ec2.describe_keypairs(Filters = [dict(Name = 'tag:Name', Values = [po + '*'])])['KeyPairs']]
+        
+        for security_group in ec2.describe_security_groups(Filters = [dict(Name = 'group-name', Values = [po])])['SecurityGroups']:
+            ec2.delete_security_group(GroupName = security_group['GroupName'])
+        
+        for internet_gateway in ec2.describe_internet_gateways(Filters = [dict(Name = 'tag:Name', Values = [po])])['InternetGateways']:
+            for attachment in internet_gateway['Attachments']:
+                #TODO: check for 'State': 'attaching'|'attached'|'detaching'|'detached',
+                # The VPC must not contain any running instances with Elastic IP addresses or public IPv4 addresses.
+                ec2.detach_internet_gateway(InternetGatewayId = internet_gateway['InternetGatewayId'], VpcId = attachment['VpcId'])
+            # TODO: wait until all detached
+            ec2.delete_internet_gateway(internetgatewayid = internet_gateway['internetgatewayid'])
+        
+        for route_table in ec2.describe_route_tables(Filters = [dict(Name = 'tag:Name', Values = [po])])['RouteTables']:
+            for association in route_table['Associations']:
+                #TODO: check for AssociationState 'State': 'associating'|'associated'|'disassociating'|'disassociated'|'failed',
+                ec2.disassociate_route_table(AssociationId = association['RouteTableAssociationId'])
+            # TODO: wait until all disassociated
+            ec2.delete_route_table(RouteTableId = route_table['RouteTableId'])
+                
+        for subnets in ec2.describe_subnets(Filters = [dict(Name = 'tag:Name', Values = [po])])['Subnets']:
+            ec2.delete_subnet(SubnetId = subnet['SubnetId'])
+
+        for vpc in ec2.describe_vpcs(Filters = [dict(Name = 'tag:Name', Values = [po])])['Vpcs']:
+            ec2.delete_vpc(VpcId = vpc['VpcId'])
+    
+    for key_name in key_pair_names:    
+        ec2.delete_key_pair(KeyName = key_name)
     
     # iam users
     # iam role
@@ -542,13 +569,15 @@ def clean(region, name, root):
     # iam instance profile
 
     if name:
-        key_path = os.path.join(root, name + '.pem')
+        key_path = os.path.join(root, f'{name}_{region}.pem')
         if os.path.exists(key_path):
             os.remove(key_path)
     else:
         for key_name in os.listdir(root):
-            os.remove(os.path.join(root, key_name))
-        os.rmdir(root)
+            if key_name.endswith(region + '.pem'):
+                os.remove(os.path.join(root, key_name))
+        if not os.listdir(root):
+            os.rmdir(root)
 
 def datasets(name, root, region, availability_zone):
     run(region = region, availability_zone = availability_zone, name = name, shutdown_after_init_script = True)
@@ -564,6 +593,7 @@ if __name__ == '__main__':
     parser.add_argument('cmd', choices = ['help', 'ps', 'lsblk', 'blkdeactivate', 'kill', 'killall', 'ssh', 'scp', 'setup', 'micro', 'datasets', 'mkdir', 'ls', 'rm', 'clean', 'run'])
     parser.add_argument('--region', default = 'us-east-1')
     parser.add_argument('--availability-zone', default = 'us-east-1a')
+    parser.add_argument('--name'  , default = 'poehalitest81')
     parser.add_argument('--username', default = 'ubuntu')
     parser.add_argument('--vpc-id')
     parser.add_argument('--subnet-id')
@@ -571,7 +601,6 @@ if __name__ == '__main__':
     parser.add_argument('--root', default = '~')
     parser.add_argument('--job-path')
     parser.add_argument('--instance-type', deafult = 't3.mciro', choices = ['t3.micro'])
-    parser.add_argument('--name'  , default = 'poehalitest80')
     parser.add_argument('--all', action = 'store_true')
     parser.add_argument('--suffix')
     parser.add_argument('--env-path')
