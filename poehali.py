@@ -21,7 +21,7 @@ def random_suffix():
 def TagSpecifications(resource, name = '', suffix = ''):
     return [dict(ResourceType = resource, Tags = [dict(Key = 'Name', Value = N(name = name, suffix = suffix)  )])] 
 
-def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None, cold_disk_size_gb = 200, hot_disk_size_gb = 200, cidr_vpc = '192.168.0.0/16', cidr_public_internet = '0.0.0.0/0', iops = 100):
+def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None, cold_disk_size_gb = 200, hot_disk_size_gb = 200, vpc_cidr = '192.168.0.0/16', public_internet_cidr = '0.0.0.0/0', iops = 100):
     root = os.path.expanduser(os.path.join(root, '.' + po))
     print('- name is', name)
     print('- region is', region)
@@ -42,9 +42,21 @@ def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None
             except botocore.exceptions.ClientError as err:
                 if err.response['Error']['Code'] != 'DefaultVpcAlreadyExists':
                     #TODO: filter out EC2-Classic not supporting default VPC
-                    vpc = ec2.create_vpc(CidrBlock = cidr_vpc, InstanceTenancy='default', TagSpecifications = TagSpecifications('vpc', name = po))['Vpc']
+                    vpc = ec2.create_vpc(CidrBlock = vpc_cidr, InstanceTenancy='default', TagSpecifications = TagSpecifications('vpc', name = po))['Vpc']
+        vpc_cidr = vpc['CidrBlock']
         vpc_id = vpc['VpcId']
     print('- vpc is', vpc_id)
+
+    if not subnet_id:
+        subnet = (ec2.describe_subnets(Filters = [dict(Name = 'availability-zone', Values = [availability_zone]), dict(Name = 'default-for-az', Values = ['true'])])['Subnets'] + ec2.describe_subnets(Filters = [dict(Name = 'availability-zone', Values = [availability_zone]), dict(Name = 'tag:Name', Values = [po])])['Subnets'] + empty)[0]
+        if not subnet:
+            print('- subnet not found, creating')
+            subnet = ec2.create_subnet(VpcId = vpc_id, AvailabilityZone = availability_zone, CidrBlock = vpc_cidr, TagSpecifications = TagSpecifications('subnet', name = po))['Subnet']
+            route_table_id = ec2.describe_route_tables(Filters = [dict(Name = 'association.subnet-id', Values = [subnet['SubnetId']])])['RouteTables'][0]['Associations'][0]['RouteTableId']
+            print('- route table is', route_table_id)
+            ec2.create_route(DestinationCidrBlock = cidr_public_internet, GatewayId = internet_gateway['InternetGatewayId'], RouteTableId = route_table_id)
+        subnet_id = subnet['SubnetId']
+    print('- subnet is', subnet_id)
             
     security_group = (ec2.describe_security_groups(Filters = [dict(Name = 'vpc-id', Values = [vpc_id]), dict(Name = 'group-name', Values = [po])])['SecurityGroups'] + empty)[0]
     if not security_group:
@@ -64,7 +76,7 @@ def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None
         subnet = (ec2.describe_subnets(Filters = [dict(Name = 'availability-zone', Values = [availability_zone]), dict(Name = 'tag:Name', Values = [po])])['Subnets'] + empty)[0]
         if not subnet:
             print('- subnet not found, creating')
-            subnet = ec2.create_subnet(VpcId = vpc_id, AvailabilityZone = availability_zone, CidrBlock = cidr_vpc, TagSpecifications = TagSpecifications('subnet', name = po))['Subnet']
+            subnet = ec2.create_subnet(VpcId = vpc_id, AvailabilityZone = availability_zone, CidrBlock = vpc_cidr, TagSpecifications = TagSpecifications('subnet', name = po))['Subnet']
             route_table_id = ec2.describe_route_tables(Filters = [dict(Name = 'association.subnet-id', Values = [subnet['SubnetId']])])['RouteTables'][0]['Associations'][0]['RouteTableId']
             print('- route table is', route_table_id)
             ec2.create_route(DestinationCidrBlock = cidr_public_internet, GatewayId = internet_gateway['InternetGatewayId'], RouteTableId = route_table_id)
@@ -85,8 +97,8 @@ def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None
         with open(key_path, 'w') as f:
             f.write(key_pair['KeyMaterial'])
         
-        #os.chmod(os.path.join(root, name + '.pem'), 600)
-        subprocess.call(['chmod', '600', os.path.join(root, name + '.pem')])
+        #os.chmod(key_path, 600)
+        subprocess.call(['chmod', '600', key_path])
 
     print('- key at', key_path)
 
