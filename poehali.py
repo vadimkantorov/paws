@@ -34,7 +34,7 @@ def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None
     iam = boto3.client('iam', region_name = region)
 
     if not vpc_id:
-        vpc = (ec2.describe_vpcs(Filters = [dict(Name = 'is-default', Values = ['true'])])['Vpcs'] + ec2.describe_vpcs(Filters = [dict(Name = 'tag:Name', Values = [po])])['Vpcs'] + empty)[0]
+        vpc = (ec2.describe_vpcs(Filters = [dict(Name = 'tag:Name', Values = [po])])['Vpcs'] + ec2.describe_vpcs(Filters = [dict(Name = 'is-default', Values = ['true'])])['Vpcs'] + empty)[0]
         if not vpc:
             print('- vpc not found, creating')
             try:
@@ -48,7 +48,7 @@ def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None
     print('- vpc is', vpc_id)
 
     if not subnet_id:
-        subnet = (ec2.describe_subnets(Filters = [dict(Name = 'availability-zone', Values = [availability_zone]), dict(Name = 'default-for-az', Values = ['true'])])['Subnets'] + ec2.describe_subnets(Filters = [dict(Name = 'availability-zone', Values = [availability_zone]), dict(Name = 'tag:Name', Values = [po])])['Subnets'] + empty)[0]
+        subnet = (ec2.describe_subnets(Filters = [dict(Name = 'availability-zone', Values = [availability_zone]), dict(Name = 'tag:Name', Values = [po])] + ec2.describe_subnets(Filters = [dict(Name = 'availability-zone', Values = [availability_zone]), dict(Name = 'default-for-az', Values = ['true'])])['Subnets'] + )['Subnets'] + empty)[0]
         if not subnet:
             print('- subnet not found, creating')
             subnet = ec2.create_subnet(VpcId = vpc_id, AvailabilityZone = availability_zone, CidrBlock = vpc_cidr, TagSpecifications = TagSpecifications('subnet', name = po))['Subnet']
@@ -57,6 +57,13 @@ def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None
             ec2.create_route(DestinationCidrBlock = cidr_public_internet, GatewayId = internet_gateway['InternetGatewayId'], RouteTableId = route_table_id)
         subnet_id = subnet['SubnetId']
     print('- subnet is', subnet_id)
+    
+    internet_gateway = (ec2.describe_internet_gateways(Filters = [dict(Name = 'attachment.vpc-id', Values = [vpc_id])])['InternetGateways'] + empty)[0]
+    if not internet_gateway:
+        print('- internet gateway not found, creating')
+        internet_gateway = ec2.create_internet_gateway(TagSpecifications = TagSpecifications('internet-gateway', name = po))['InternetGateway']
+        ec2.attach_internet_gateway(InternetGatewayId = internet_gateway['InternetGatewayId'], VpcId = vpc_id)
+    print('- internet gateway is', internet_gateway['InternetGatewayId'])
             
     security_group = (ec2.describe_security_groups(Filters = [dict(Name = 'vpc-id', Values = [vpc_id]), dict(Name = 'group-name', Values = [po])])['SecurityGroups'] + empty)[0]
     if not security_group:
@@ -64,24 +71,6 @@ def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None
         security_group = ec2.create_security_group(GroupName = po, Description = po, VpcId = vpc_id, TagSpecifications = TagSpecifications('security-group', name = po))
         ec2.authorize_security_group_ingress(GroupId = security_group['GroupId'], IpPermissions = [dict(IpProtocol = 'tcp', FromPort = 22, ToPort = 22, IpRanges = [dict(CidrIp = cidr_public_internet)])])
     print('- security group is', security_group['GroupId'])
-
-    internet_gateway = (ec2.describe_internet_gateways(Filters = [dict(Name = 'attachment.vpc-id', Values = [vpc_id])])['InternetGateways'] + empty)[0]
-    if not internet_gateway:
-        print('- internet gateway not found, creating')
-        internet_gateway = ec2.create_internet_gateway(TagSpecifications = TagSpecifications('internet-gateway', name = po))['InternetGateway']
-        ec2.attach_internet_gateway(InternetGatewayId = internet_gateway['InternetGatewayId'], VpcId = vpc_id)
-    print('- internet gateway is', internet_gateway['InternetGatewayId'])
-
-    if not subnet_id:
-        subnet = (ec2.describe_subnets(Filters = [dict(Name = 'availability-zone', Values = [availability_zone]), dict(Name = 'tag:Name', Values = [po])])['Subnets'] + empty)[0]
-        if not subnet:
-            print('- subnet not found, creating')
-            subnet = ec2.create_subnet(VpcId = vpc_id, AvailabilityZone = availability_zone, CidrBlock = vpc_cidr, TagSpecifications = TagSpecifications('subnet', name = po))['Subnet']
-            route_table_id = ec2.describe_route_tables(Filters = [dict(Name = 'association.subnet-id', Values = [subnet['SubnetId']])])['RouteTables'][0]['Associations'][0]['RouteTableId']
-            print('- route table is', route_table_id)
-            ec2.create_route(DestinationCidrBlock = cidr_public_internet, GatewayId = internet_gateway['InternetGatewayId'], RouteTableId = route_table_id)
-        subnet_id = subnet['SubnetId']
-    print('- subnet is', subnet_id)
     
     key_path = os.path.join(root, f'{name}_{region}.pem')
     if not os.path.exists(key_path):
@@ -101,7 +90,6 @@ def setup(name, root, region, availability_zone, vpc_id = None, subnet_id = None
         subprocess.call(['chmod', '600', key_path])
 
     print('- key at', key_path)
-
 
     #policy_arn = [p for p in iam.list_policies(Scope = 'AWS', PathPrefix = '/service-role/')['Policies'] if p['PolicyName'] == 'AmazonEC2RoleforSSM'][0]['Arn']
 
@@ -196,9 +184,9 @@ def run(region, availability_zone, name, instance_type = 't3.micro', image_name 
     print('- image name is', image_name)
     
     ec2 = boto3.client('ec2', region_name = region)
-    
-    vpc = (ec2.describe_vpcs(Filters = [dict(Name = 'tag:Name', Values = [po + '*'])])['Vpcs'] + empty)[0]
-    subnet = (ec2.describe_subnets(Filters = [dict(Name = 'availability-zone', Values = [availability_zone]), dict(Name = 'tag:Name', Values = [po])])['Subnets'] + empty)[0]
+        
+    vpc = (ec2.describe_vpcs(Filters = [dict(Name = 'tag:Name', Values = [po])])['Vpcs'] + ec2.describe_vpcs(Filters = [dict(Name = 'is-default', Values = ['true'])])['Vpcs'] + empty)[0]
+    subnet = (ec2.describe_subnets(Filters = [dict(Name = 'availability-zone', Values = [availability_zone]), dict(Name = 'tag:Name', Values = [po])] + ec2.describe_subnets(Filters = [dict(Name = 'availability-zone', Values = [availability_zone]), dict(Name = 'default-for-az', Values = ['true'])])['Subnets'] + )['Subnets'] + empty)[0]
     assert vpc and subnet
     print('- vpc is', vpc.get('VpcId'))
     print('- subnet is', subnet.get('SubnetId'))
