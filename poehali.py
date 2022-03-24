@@ -13,6 +13,9 @@ po = 'poehali'
 empty = [{}]
 
 def N(name = '', resource = '', suffix = '', sep = '_'):
+    if not name and not resource and not suffix:
+        return po + sep
+
     return po + (sep + name if name else '') + (sep + resource if resource else '') + (sep + suffix if suffix else '')
 
 def R(root):
@@ -24,7 +27,7 @@ def random_suffix():
 def TagSpecifications(resource, name = '', suffix = ''):
     return [dict(ResourceType = resource, Tags = [dict(Key = 'Name', Value = N(name = name, suffix = suffix)  )])] 
 
-def setup(name, root, region, availability_zone, cold_disk_size_gb = 200, hot_disk_size_gb = 200, cidr_public_internet = '0.0.0.0/0', iops = 100, cold_bucket = False, hot_bucket = False):
+def setup(name, root, region, availability_zone, cold_disk_size_gb = 200, hot_disk_size_gb = 200, cidr_public_internet = '0.0.0.0/0', iops = 100, cold_bucket = False, hot_bucket = False, **ignored):
     root = R(root)
     print('- name is', name)
     print('- region is', region)
@@ -68,12 +71,13 @@ def setup(name, root, region, availability_zone, cold_disk_size_gb = 200, hot_di
     print('- key at', sshkey_path)
     
     iamkey_path = sshkey_path.replace('.pem', '.ini')
+    iam_name = N(name = name)
     try:
-        user = iam.get_user(UserName = name)['User']
+        user = iam.get_user(UserName = iam_name)['User']
     except:
         print('- user does not exist, creating')
-        user = iam.create_user(UserName = name)['User']
-        access_key = iam.create_access_key(UserName = name)['AccessKey']
+        user = iam.create_user(UserName = iam_name)['User']
+        access_key = iam.create_access_key(UserName = iam_name)['AccessKey']
         print('- access key is', access_key['AccessKeyId'])
         
         with open(iamkey_path, 'w') as f:
@@ -82,7 +86,7 @@ def setup(name, root, region, availability_zone, cold_disk_size_gb = 200, hot_di
     print('- user is', user['Arn'])
     print('- access key backup is', iamkey_path)
     print('- waiting for user to exist')
-    iam.get_waiter('user_exists').wait(UserName = name)
+    iam.get_waiter('user_exists').wait(UserName = iam_name)
 
     #policy_arn = [p for p in iam.list_policies(Scope = 'AWS', PathPrefix = '/service-role/')['Policies'] if p['PolicyName'] == 'AmazonEC2RoleforSSM'][0]['Arn']
 
@@ -149,13 +153,13 @@ def setup(name, root, region, availability_zone, cold_disk_size_gb = 200, hot_di
             ]
         )
         
-        role_arn = iam.create_role(RoleName = name, AssumeRolePolicyDocument = json.dumps(trust_relationship_policy_document))['Role']['Arn']
+        role_arn = iam.create_role(RoleName = iam_name, AssumeRolePolicyDocument = json.dumps(trust_relationship_policy_document))['Role']['Arn']
         print('- role is', role_arn)
-        policy_arn = iam.create_policy(PolicyName = name, PolicyDocument = json.dumps(policy_document))['Policy']['Arn']
+        policy_arn = iam.create_policy(PolicyName = iam_name, PolicyDocument = json.dumps(policy_document))['Policy']['Arn']
         print('- policy is', policy_arn)
-        iam.attach_role_policy(RoleName = name, PolicyArn = policy_arn)
-        instance_profile = iam.create_instance_profile(InstanceProfileName = name)
-        iam.add_role_to_instance_profile(InstanceProfileName = name, RoleName = name)
+        iam.attach_role_policy(RoleName = iam_name, PolicyArn = policy_arn)
+        instance_profile = iam.create_instance_profile(InstanceProfileName = iam_name)
+        iam.add_role_to_instance_profile(InstanceProfileName = iam_name, RoleName = iam_name)
     print('- instance profile is', instance_profile['InstanceProfile']['Arn'])
 
     bucket_spec = dict(cold = cold_bucket, hot = hot_bucket)
@@ -175,7 +179,7 @@ def setup(name, root, region, availability_zone, cold_disk_size_gb = 200, hot_di
                 disk = ec2.create_volume(VolumeType = 'io1', MultiAttachEnabled = True, AvailabilityZone = availability_zone, Size = gb, Iops = iops, TagSpecifications = TagSpecifications('volume', name = name, suffix = bucket_suffix))
         print('- disk', bucket_suffix, 'is', disk['VolumeId'])
 
-def run(region, availability_zone, name, instance_type = 't3.micro', image_name = 'ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-20210430', shutdown_after_init_script = False, username = 'ubuntu', job_path = None, job_body = '', env_path = None, env = {}, git_clone = None, git_tag = None, repo_dir = None, ssh_when_running = False):
+def run(region, availability_zone, name, instance_type = 't3.micro', image_name = 'ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-20210430', shutdown_after_init_script = False, username = 'ubuntu', job_path = None, job_body = '', env_path = None, env = {}, git_clone = None, git_tag = None, repo_dir = None, ssh_when_running = False, **ignored):
     #TODO: support expiration
     print('- name is', name)
     print('- region is', region)
@@ -269,7 +273,7 @@ def run(region, availability_zone, name, instance_type = 't3.micro', image_name 
     
     return instance['InstanceId']
 
-def ps(region, name, root):
+def ps(region, name, root, **ignored):
     root = R(root)
     print('- name is', name)
     print('- region is', region)
@@ -303,11 +307,12 @@ def ps(region, name, root):
         print('ssh -i ' + os.path.join(root, name + '.pem') + f' ubuntu@{public_ip}') if public_ip else print('ssh N/A')
         print()
 
-def kill(region, instance_id):
+def kill(region, instance_id, **ignored):
     ec2 = boto3.client('ec2', region_name = region)
     print(ec2.terminate_instances(InstanceIds = [instance_id]))
     
-def killall(region, name = None):
+def killall(region, name = None, **ignored):
+    # TODO; detach volumes before termination?
     print('- name is', name)
     print('- region is', region)
     ec2 = boto3.client('ec2', region_name = region)
@@ -318,7 +323,7 @@ def killall(region, name = None):
         return
     ec2.terminate_instances(InstanceIds = instance_ids)
 
-def ssh(region, name, root, instance_id = None, username = 'ubuntu', scp = False):
+def ssh(region, name, root, instance_id = None, username = 'ubuntu', scp = False, **ignored):
     root = R(root)
     print('- name is', name)
     print('- region is', region)
@@ -361,15 +366,13 @@ def ssh(region, name, root, instance_id = None, username = 'ubuntu', scp = False
         subprocess.call(['chmod', '600', key_path])
         subprocess.call(cmd)
 
-def help(region):
+def help(region, **ignored):
     print(f'https://console.aws.amazon.com/iam/home?region={region}')
-    print(f'https://console.aws.amazon.com/vpc/home?region={region}#vpcs')
-    print(f'https://console.aws.amazon.com/vpc/home?region={region}#subnets')
     print(f'https://console.aws.amazon.com/ec2/v2/home?region={region}#KeyPairs')
     print(f'https://console.aws.amazon.com/ec2/v2/home?region={region}#Instances')
     print(f'https://console.aws.amazon.com/ec2/v2/home?region={region}#Volumes')
 
-def blkdeactivate(region, name):
+def blkdeactivate(region, name, **ignored):
     print('- name is', name)
     print('- region is', region)
     ec2 = boto3.client('ec2', region_name = region)
@@ -391,7 +394,7 @@ def blkdeactivate(region, name):
     print('- volumes other:', volume_ids_other)
             
 
-def lsblk(region, name):
+def lsblk(region, name, **ignored):
     print('- name is', name)
     print('- region is', region)
     ec2 = boto3.client('ec2', region_name = region)
@@ -407,7 +410,7 @@ def lsblk(region, name):
 
         print(f'[{name} := {volume_id} @ {availability_zone}]: {size} Gb, {state}')
 
-def ls(region, name):
+def ls(region, name, **ignored):
     print('- name is', name)
     print('- region is', region)
     s3 = boto3.client('s3', region_name = region)
@@ -419,7 +422,7 @@ def ls(region, name):
             num_objects = sum(page['KeyCount'] for page in paginator_list_objects_v2.paginate(Bucket = bucket['Name'], Delimiter = '/'))
             print('- bucket is', 's3://' + bucket['Name'], '| file count is', num_objects)
 
-def mkdir(region, name, suffix, retry = 5, root = None):
+def mkdir(region, name, suffix, retry = 5, root = None, **ignored):
     print('- name is', name)
     print('- region is', region)
     s3 = boto3.client('s3', region_name = region)
@@ -433,12 +436,13 @@ def mkdir(region, name, suffix, retry = 5, root = None):
     if any(bucket['Name'] == bucket_name for bucket in s3.list_buckets()['Buckets']):
         return print('- bucket exists', 's3://' + bucket_name, ', quitting')
     
+    iam_name = N(name = name)
     try:
-        user = iam.get_user(UserName = name)['User']
+        user = iam.get_user(UserName = iam_name)['User']
     except:
         return print('- user does not exist, quitting')
 
-    iam.get_waiter('user_exists').wait(UserName = name)
+    iam.get_waiter('user_exists').wait(UserName = iam_name)
     print('- user is', user['Arn'])
     
     bucket_configuration_kwargs = dict(CreateBucketConfiguration = dict(LocationConstraint = region)) if not region.startswith('us-east-1') else {}
@@ -509,7 +513,7 @@ def mkdir(region, name, suffix, retry = 5, root = None):
     public_url = f'http://{bucket_name}.s3-website-{region}.amazonaws.com/public'
     print('- public site is', public_url)
 
-def rm_rf(region, name, suffix = None):
+def rm(region, name, suffix = None, **ignored):
     print('- name is', name)
     print('- region is', region)
     s3 = boto3.client('s3', region_name = region)
@@ -524,9 +528,11 @@ def rm_rf(region, name, suffix = None):
 
     s3.delete_bucket(Bucket = bucket_name)
 
-def clean(region, name, root):
+def clean(region, name, root, delete_data, **ignored):
     if input('Please type in [iunderstanddanger]: ') != 'iunderstanddanger':
-        return print('- no confirmation, quitting')
+        return print('- confirmation not received, quitting')
+    
+    print('- confirmation received')
     
     root = R(root)
     print('- name is', name)
@@ -537,62 +543,89 @@ def clean(region, name, root):
     ec2 = boto3.client('ec2', region_name = region)
     iam = boto3.client('iam', region_name = region)
 
-    # TODO; detach volumes before termination?
-    #killall(region = region, name = name)
+    killall(region = region, name = name)
     
-    #TODO: retry multiple times
-    #blkdeactivate(region = region, name = name)
+    if delete_data:
+        #TODO: retry multiple times
+        blkdeactivate(region = region, name = name)
+        rm(region = reigon, name = name)
 
-    #rm_rf(region = reigon, name = name)
-
-    key_pair_names = [key['Name'] for key in ec2.describe_keypairs(Filters = [dict(Name = 'tag:Name', Values = [N(name = name) + '*'])])['KeyPairs']]
+    key_pair_names = [key['Name'] for key in ec2.describe_key_pairs(Filters = [dict(Name = 'tag:Name', Values = [N(name = name) + '*'])])['KeyPairs']]
     if not name:
         key_pair_names = [key['Name'] for key in ec2.describe_keypairs(Filters = [dict(Name = 'tag:Name', Values = [po + '*'])])['KeyPairs']]
         
         for security_group in ec2.describe_security_groups(Filters = [dict(Name = 'group-name', Values = [po])])['SecurityGroups']:
             ec2.delete_security_group(GroupName = security_group['GroupName'])
+            print('- deleted security group', security_group['GroupName'])
     
     for key_name in key_pair_names:    
         ec2.delete_key_pair(KeyName = key_name)
-    
-    # iam users
-    # iam role
-    # iam policy
-    # iam instance profile
+        print('- deleted key pair', key_name)
+
+    iam_prefix = (N(name = name) + '\n') if name else N()
+
+    for role in iam.list_roles()['Roles']:
+        if not (role['RoleName'] + '\n').startswith(iam_prefix):
+            continue
+
+        for policy in iam.list_attached_role_policies(RoleName = role['RoleName'])['AttachedPolicies']:
+            iam.detach_role_policy(RoleName = role['RoleName'], PolicyArn = policy['PolicyArn'])
+            iam.delete_policy(PolicyArn = policy['PolicyArn'])
+            print('- deleted policy', policy['PolicyArn'])
+        
+        for instance_profile in iam.list_instance_profiles_for_role(RoleName = role['RoleName'])['InstanceProfiles']:
+            iam.remove_role_from_instance_profile(InstanceProfileName = instance_profile['InstanceProfileName'], RoleName = role['RoleName'])
+            iam.delete_instance_profile(InstanceProfileName = instance_profile['InstanceProfileName'])
+            print('- deleted instance profile', instance_profile['InstanceProfileName'])
+
+        iam.delete_role(RoleName = role['RoleName'])
+        print('- deleted role', role['RoleName'])
+
+    for user in iam.list_users()['Users']:
+        if not (user['UserName'] + '\n').startswith(iam_prefix):
+            continue
+        for access_key in iam.list_access_keys(UserName=user['UserName'])['AccessKeyMetadata']:
+            print(access_key)
+            iam.delete_access_key(AccessKeyId = access_key['AccessKeyId'], UserName = user['UserName'])
+            print('- deleted access key', access_key['AccessKeyId'])
+
+        iam.delete_user(UserName = user['UserName'])
+        print('- deleted user', user['UserName'])
 
     if name:
         key_path = os.path.join(root, f'{name}_{region}.pem')
         if os.path.exists(key_path):
             os.remove(key_path)
+            print('- deleted key', key_path)
     else:
         for key_name in os.listdir(root):
             if key_name.endswith(region + '.pem'):
-                os.remove(os.path.join(root, key_name))
+                key_path = os.path.join(root, key_name)
+                os.remove(key_path)
+                print('- deleted key', key_path)
+
         if not os.listdir(root):
             os.rmdir(root)
+            print('- deleted root', root)
 
-def datasets(name, root, region, availability_zone):
-    run(region = region, availability_zone = availability_zone, name = name, shutdown_after_init_script = True)
-
-def micro(name, root, region, availability_zone):
-    pass
-
-def gpu(name, root, region, availability_zone):
-    pass
+def micro(name, root, region, availability_zone, instance_type_micro, **ignored):
+    run(region = region, availability_zone = availability_zone, name = name, instance_type = instance_type_micro)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('cmd', choices = ['help', 'ps', 'lsblk', 'blkdeactivate', 'kill', 'killall', 'ssh', 'scp', 'setup', 'micro', 'datasets', 'mkdir', 'ls', 'rm', 'clean', 'run'])
+    parser.add_argument('cmd', choices = ['help', 'ps', 'lsblk', 'blkdeactivate', 'kill', 'killall', 'ssh', 'setup', 'micro', 'mkdir', 'ls', 'rm', 'clean', 'run'])
     parser.add_argument('--region', default = 'us-east-1')
     parser.add_argument('--availability-zone', default = 'us-east-1a')
-    parser.add_argument('--name'  , default = 'poehalitest82')
+    parser.add_argument('--name'  , default = 'poehalitest85')
     parser.add_argument('--username', default = 'ubuntu')
     parser.add_argument('--instance-id')
     parser.add_argument('--ssh', dest = 'ssh_when_running', action = 'store_true')
+    parser.add_argument('--scp', action = 'store_true')
     parser.add_argument('--root', default = '~')
     parser.add_argument('--job-path')
     parser.add_argument('--instance-type', default = 't3.mciro', choices = ['t3.micro'])
-    parser.add_argument('--all', action = 'store_true')
+    parser.add_argument('--instance-type-micro', default = 't3.mciro')
+    parser.add_argument('--delete-data', action = 'store_true')
     parser.add_argument('--suffix')
     parser.add_argument('--env-path')
     parser.add_argument('--env', nargs = '*')
@@ -602,55 +635,11 @@ if __name__ == '__main__':
     parser.add_argument('--cold-bucket', action = 'store_true')
     parser.add_argument('--hot-bucket', action = 'store_true')
     args = parser.parse_args()
-    
-    if args.cmd == 'help':
-        help(region = args.region)
-    
-    if args.cmd == 'kill':
-        kill(region = args.region, instance_id = args.instance_id)
-    
-    if args.cmd == 'killall':
-        killall(region = args.region, name = args.name)
-    
-    if args.cmd == 'ps':
-        ps(region = args.region, name = args.name, root = args.root)
-    
-    if args.cmd == 'lsblk':
-        lsblk(region = args.region, name = args.name)
-    
-    if args.cmd == 'blkdeactivate':
-        blkdeactivate(region = args.region, name = args.name)
-    
-    if args.cmd == 'ssh':
-        ssh(region = args.region, name = args.name, root = args.root, instance_id = args.instance_id)
-    
-    if args.cmd == 'scp':
-        ssh(region = args.region, name = args.name, root = args.root, instance_id = args.instance_id, scp = True)
 
-    if args.cmd == 'setup':
-        setup(name = args.name, region = args.region, root = args.root, availability_zone = args.availability_zone, cold_disk_size_gb = args.cold_disk_size_gb, hot_disk_size_gb = args.hot_disk_size_gb, cold_bucket = args.cold_bucket, hot_bucket = args.hot_bucket)
-    
-    if args.cmd == 'micro':
-        instanceid = micro(name = args.name, region = args.region, availability_zone = args.availability_zone, instance_type = 't3.micro', username = args.username)
-        #ssh(name = args.name, region = args.region, root = args.root, instance_id = instance_id, username = args.username)
-    
-    if args.cmd == 'datasets':
-        datasets(name = args.name, region = args.region, availability_zone = args.availability_zone)
-
-    if args.cmd == 'mkdir':
-        mkdir(name = args.name, region = args.region, suffix = args.suffix)
-    
-    if args.cmd == 'rm':
-        rm_rf(name = args.name, region = args.region, suffix = args.suffix)
-    
-    if args.cmd == 'ls':
-        ls(name = args.name, region = args.region)
-    
-    if args.cmd == 'clean':
-        clean(name = args.name, region = args.region, root = args.root)
-    
-    if args.cmd == 'run':
-        run(name = args.name, region = args.region, availability_zone = args.availability_zone, instance_type = args.instance_type, username = args.username, job_path = args.job_path, env_path = args.env_path, env = {**dict(kv.split('=') for kv in args.env), **{k : os.getenv(k, '') for k in args.env_export}}, ssh_when_running = args.ssh_when_running )
+    args.env = {**dict(kv.split('=') for kv in args.env), **{k : os.getenv(k, '') for k in args.env_export}}
+    argv = vars(args)
+    cmd = globals()[argv.pop('cmd')]
+    cmd(**argv)
 
     # tar -c ./myfiles | aws s3 cp - s3://my-bucket/myobject"
     # https://docs.aws.amazon.com/cli/latest/topic/s3-config.html
