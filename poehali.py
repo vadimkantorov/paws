@@ -2,6 +2,7 @@ import os
 import datetime
 import json
 import time
+import base64
 import random
 import string
 import argparse
@@ -179,7 +180,7 @@ def setup(name, root, region, availability_zone, cold_disk_size_gb = 200, hot_di
                 disk = ec2.create_volume(VolumeType = 'io1', MultiAttachEnabled = True, AvailabilityZone = availability_zone, Size = gb, Iops = iops, TagSpecifications = TagSpecifications('volume', name = name, suffix = bucket_suffix))
         print('- disk', bucket_suffix, 'is', disk['VolumeId'])
 
-def run(region, availability_zone, name, instance_type = 't3.micro', image_name = 'ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-20210430', shutdown_after_init_script = False, username = 'ubuntu', job_path = None, job_body = '', env_path = None, env = {}, git_clone = None, git_tag = None, repo_dir = None, ssh_when_running = False, **ignored):
+def run(region, availability_zone, name, instance_type = 't3.micro', image_name = 'ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-20210430', shutdown = False, username = 'ubuntu', job_path = None, job_body = '', env_path = None, env = {}, git_clone = None, git_tag = None, git_key_path = None, git_dir = None, ssh_when_running = False, hot_bucket_sync_dir = None, verbose = False, **ignored):
     #TODO: support expiration
     print('- name is', name)
     print('- region is', region)
@@ -199,21 +200,26 @@ def run(region, availability_zone, name, instance_type = 't3.micro', image_name 
     print('- security group is', security_group.get('GroupId'))
     print('- image is', image.get('ImageId'))
 
-    volume_cold = (ec2.describe_volumes(Filters = [dict(Name = 'tag:Name', Values = [N(name, 'datasets')])])['Volumes'] + empty)[0]
-    volume_hot = (ec2.describe_volumes(Filters = [dict(Name = 'tag:Name', Values = [N(name, 'experiments')])])['Volumes'] + empty)[0]
+    volume_cold= (ec2.describe_volumes(Filters = [dict(Name = 'tag:Name', Values = [N(name, 'cold')])])['Volumes'] + empty)[0]
+    volume_hot = (ec2.describe_volumes(Filters = [dict(Name = 'tag:Name', Values = [N(name,  'hot')])])['Volumes'] + empty)[0]
     print('- volume cold is', volume_cold.get('VolumeId'))
-    print('- volume hot is', volume_hot.get('VolumeId'))
+    print('- volume hot is',  volume_hot .get('VolumeId'))
     disk_spec = {
-        **({f'/home/{username}/datasets'    : volume_cold['VolumeId'] } if volume_cold else {})
-        **({f'/home/{username}/experiments' : volume_hot ['VolumeId'] } if volume_hot  else {})
+        **({f'/home/{username}/cold': volume_cold['VolumeId'] } if volume_cold else {})
+        **({f'/home/{username}/hot' : volume_hot ['VolumeId'] } if volume_hot  else {})
     }
     
-    init_script = '''#!/bin/bash
+    init_script = f'''#!/bin/bash
     set -ex
     exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
     sudo apt update
     sudo apt install -y awscli git wget
+    export AWS_REGION="{region}"
     '''
+    if env_path:
+        with open(env_path) as f:
+            init_script += f.read() + '\n'
+    init_script += '\n'.join(f'export {k}="{v}"' for k, v in env.items()) + '\n'
     
     for i, (mount_path, volume_id) in enumerate(disk_spec.items()):
         init_script += '''
@@ -228,18 +234,24 @@ def run(region, availability_zone, name, instance_type = 't3.micro', image_name 
     sudo chown -R ${USERNAME} ${MOUNTPATH}
     '''.replace('${REGION}', region).replace('${DISKNUM}', 1 + i).replace('${VOLUMEID}', volume_id).replace('${MOUNTPATH}', mount_path).replace('${USERNAME}', username)
 
-    if env_path:
-        with open(env_path) as f:
-            init_script += f.read() + '\n'
-
-    init_script += '\n'.join(f'export {k}="{v}"' for k, v in env.items()) + '\n'
-    
-    if git_clone:
-        job_body = 'git clone --single-branch --depth 1' + (f' --branch "{git_tag}" ' if git_tag else '') + ' "{git_clone}"' + (f' "{repo_dir}"' if repo_dir else '') + '\n' + job_body
-
     if job_path:
         with open(job_path) as f:
             job_body += f.read() + '\n'
+    
+    if git_clone:
+        git_dir = git_dir or os.path.basename(git_clone.replace('.git', ''))
+        git_preamble = 'git clone --single-branch --depth 1' + (f' --branch "{git_tag}" ' if git_tag else '') + ' "{git_clone}" "{git_dir}" && cd "{git_dir}"'
+        
+        if git_key_path:
+            assert os.path.exists(git_key_path)
+            with open(git_key_path, 'rb') as f:
+                git_key_base64 = base64.b64encode(f.read()).decode()
+
+            git_key_path = '~/.ssh/id_rsa_git' 
+            git_preamble = 'echo "{git_key_base64}" | base64 --decode > {git_key_path}'
+            git_preamble += f'\nexport GIT_SSH_COMMAND="ssh -i {git_key_path} -o IdentitiesOnly=yes"'
+
+        job_body = git_preamble + '\n' + job_body
 
     if job_body:
         init_script += f'''
@@ -250,10 +262,16 @@ def run(region, availability_zone, name, instance_type = 't3.micro', image_name 
     set -e
     '''
 
-    #TODO job body under ex to eat job errors and shutdown
-    if shutdown_after_init_script:
-        init_script += 'sudo shutdown'
+    if hot_bucket_sync_dir:
+        bucket_name = N(name = name, suffix = 'suffix').lower().replace('_', '-')
+        init_script += f'[ -f "{hot_bucket_sync_dir}" ] && aws s3 sync --region ${region} "{hot_bucket_sync_dir}" "s3://{bucket_name}"\n'
+
+    if shutdown:
+        init_script += 'sudo shutdown\n'
     
+    if verbose:
+        print(init_script)
+
     instance = ec2.run_instances(
         InstanceType = instance_type, 
         ImageId = image['ImageId'], 
@@ -614,6 +632,7 @@ def micro(name, root, region, availability_zone, instance_type_micro, **ignored)
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('cmd', choices = ['help', 'ps', 'lsblk', 'blkdeactivate', 'kill', 'killall', 'ssh', 'setup', 'micro', 'mkdir', 'ls', 'rm', 'clean', 'run'])
+    parser.add_argument('--verbose', action = 'store_true')
     parser.add_argument('--region', default = 'us-east-1')
     parser.add_argument('--availability-zone', default = 'us-east-1a')
     parser.add_argument('--name'  , default = 'poehalitest85')
@@ -634,6 +653,11 @@ if __name__ == '__main__':
     parser.add_argument('--hot-disk-size-gb', type = int, default = 0)
     parser.add_argument('--cold-bucket', action = 'store_true')
     parser.add_argument('--hot-bucket', action = 'store_true')
+    parser.add_argument('--hot-bucket-sync-dir')
+    parser.add_argument('--git-clone')
+    parser.add_argument('--git-tag')
+    parser.add_argument('--git-key-path')
+    parser.add_argument('--git-dir')
     args = parser.parse_args()
 
     args.env = {**dict(kv.split('=') for kv in args.env), **{k : os.getenv(k, '') for k in args.env_export}}
@@ -641,8 +665,12 @@ if __name__ == '__main__':
     cmd = globals()[argv.pop('cmd')]
     cmd(**argv)
 
+    #TODO: echo nginx log server
+    #TODO: SSM run + background
+
     # tar -c ./myfiles | aws s3 cp - s3://my-bucket/myobject"
     # https://docs.aws.amazon.com/cli/latest/topic/s3-config.html
     # https://www.linkedin.com/pulse/aws-s3-multipart-uploading-milind-verma
     # https://www.slideshare.net/AmazonWebServices/deep-dive-aws-command-line-interface-50367179
     # https://www.thefreedictionary.com/words-that-end-in-aw
+    # https://stackoverflow.com/questions/63950435/can-we-run-command-as-background-process-through-aws-ssm
