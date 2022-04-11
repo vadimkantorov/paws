@@ -180,7 +180,43 @@ def setup(name, root, region, availability_zone, cold_disk_size_gb = 200, hot_di
                 disk = ec2.create_volume(VolumeType = 'io1', MultiAttachEnabled = True, AvailabilityZone = availability_zone, Size = gb, Iops = iops, TagSpecifications = TagSpecifications('volume', name = name, suffix = bucket_suffix))
         print('- disk', bucket_suffix, 'is', disk['VolumeId'])
 
-def run(region, availability_zone, name, instance_type = 't3.micro', image_name = 'ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-20210430', shutdown = False, username = 'ubuntu', job_path = None, job_body = '', env_path = None, env = {}, git_clone = None, git_tag = None, git_key_path = None, git_dir = None, ssh_when_running = False, hot_bucket_sync_dir = None, verbose = False, **ignored):
+def run(
+        region, 
+        availability_zone, 
+        name, 
+        instance_type = 't3.micro', 
+        image_name = 'ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-20210430', 
+        shutdown = False, 
+        username = 'ubuntu', 
+        env_path = None, 
+        env = {}, 
+        git_clone = None, 
+        git_tag = None, 
+        git_key_path = None, 
+        working_dir = None, 
+        ssh_when_running = False, 
+        hot_bucket_sync_dir = None, 
+        verbose = False, 
+        dry = False, 
+        conda = True, 
+        conda_installer_name = None,
+
+        job_script,
+        job_script_embed,
+        job_command,
+
+        requirements_script,
+        requirements_script_embed,
+        requirements_command,
+
+        pip_requirements,
+        pip_requirements_embed,
+        pip_install_packages,
+
+        apt_install_packages,
+        
+        **ignored
+    ):
     #TODO: support expiration
     print('- name is', name)
     print('- region is', region)
@@ -214,8 +250,14 @@ def run(region, availability_zone, name, instance_type = 't3.micro', image_name 
     exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
     sudo apt update
     sudo apt install -y awscli git wget
-    export AWS_REGION="{region}"
+    curl -s http://169.254.169.254/latest/user-data > /home/{username}/initscript.sh
     '''
+    
+    if apt_install_packages:
+        init_script += 'sudo apt install -y {pkgs}'.format(pkgs = ' '.join(apt_install_packages))
+    
+    init_script += f'export AWS_REGION="{region}\n'
+
     if env_path:
         with open(env_path) as f:
             init_script += f.read() + '\n'
@@ -234,30 +276,66 @@ def run(region, availability_zone, name, instance_type = 't3.micro', image_name 
     sudo chown -R ${USERNAME} ${MOUNTPATH}
     '''.replace('${REGION}', region).replace('${DISKNUM}', 1 + i).replace('${VOLUMEID}', volume_id).replace('${MOUNTPATH}', mount_path).replace('${USERNAME}', username)
 
-    if job_path:
-        with open(job_path) as f:
-            job_body += f.read() + '\n'
-    
+    if job_script:
+        if job_script_embed:
+            with open(job_script) as f:
+                job_command += f.read() + '\n'
+        else:
+            job_command += f'bash "{job_script}"\n'
+
+
+    preamble = []
+
+    if conda and conda_installer_name:
+        preamble.extend([
+            'PREFIX=$(realpath prefix)', 
+            'export PATH=$PREFIX/miniconda/bin:$PATH',
+            f'curl -L -so ./miniconda.sh https://repo.anaconda.com/miniconda/{conda_installer_name} && chmod +x miniconda.sh && ./miniconda.sh -b -p $PREFIX/miniconda && rm ./miniconda.sh'
+        ])
+
     if git_clone:
-        git_dir = git_dir or os.path.basename(git_clone.replace('.git', ''))
-        git_preamble = 'git clone --single-branch --depth 1' + (f' --branch "{git_tag}" ' if git_tag else '') + ' "{git_clone}" "{git_dir}" && cd "{git_dir}"'
+        working_dir = working_dir or os.path.basename(git_clone.replace('.git', ''))
         
-        if git_key_path:
-            assert os.path.exists(git_key_path)
+        if git_key_path and os.path.exists(git_key_path):
             with open(git_key_path, 'rb') as f:
                 git_key_base64 = base64.b64encode(f.read()).decode()
 
             git_key_path = '~/.ssh/id_rsa_git' 
-            git_preamble = 'echo "{git_key_base64}" | base64 --decode > {git_key_path}'
-            git_preamble += f'\nexport GIT_SSH_COMMAND="ssh -i {git_key_path} -o IdentitiesOnly=yes"'
+            preamble.extend(['echo "{git_key_base64}" | base64 --decode > {git_key_path}', f'export GIT_SSH_COMMAND="ssh -i {git_key_path} -o IdentitiesOnly=yes"'])
 
-        job_body = git_preamble + '\n' + job_body
+        preamble.append('git clone --single-branch --depth 1' + (f' --branch "{git_tag}" ' if git_tag else '') + ' "{git_clone}"')
 
-    if job_body:
+    if working_dir:
+        preamble.append(f'cd "{working_dir}"')
+
+    if pip_install_packages:
+        preamble.append('python -m pip install ' +  ' '.join(pip_install_packages))
+
+    if pip_requirements:
+        if pip_requirements_embed:
+            preamble.append('python -m pip install -r /dev/stdin <<EOF')
+            with open(pip_requirements) as f:
+                preamble.extend(f.readlines())
+            preamble.extend(['EOF', ')'])
+        else:
+            preamble.append(f'python -m pip install -r "{pip_requirements}"')
+    
+    if requirements_script:
+        if requirements_script_embed:
+            with open(requirements_script_embed) as f:
+                requirements_scommand += f.read() + '\n'
+        else:
+            requirements_command += f'bash "{requirements_script}"\n'
+
+    preamble.append(requirements_command)
+
+    job_command = '\n'.join(preamble) + '\n\n' + job_command
+
+    if job_command:
         init_script += f'''
     set +e
     sudo -i -u {username} bash - << EOF
-    {job_body}
+    {job_command}
     EOF
     set -e
     '''
@@ -271,6 +349,9 @@ def run(region, availability_zone, name, instance_type = 't3.micro', image_name 
     
     if verbose:
         print(init_script)
+
+    if dry:
+        return
 
     instance = ec2.run_instances(
         InstanceType = instance_type, 
@@ -633,6 +714,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('cmd', choices = ['help', 'ps', 'lsblk', 'blkdeactivate', 'kill', 'killall', 'ssh', 'setup', 'micro', 'mkdir', 'ls', 'rm', 'clean', 'run'])
     parser.add_argument('--verbose', action = 'store_true')
+    parser.add_argument('--dry', action = 'store_true')
     parser.add_argument('--region', default = 'us-east-1')
     parser.add_argument('--availability-zone', default = 'us-east-1a')
     parser.add_argument('--name'  , default = 'poehalitest85')
@@ -641,7 +723,6 @@ if __name__ == '__main__':
     parser.add_argument('--ssh', dest = 'ssh_when_running', action = 'store_true')
     parser.add_argument('--scp', action = 'store_true')
     parser.add_argument('--root', default = '~')
-    parser.add_argument('--job-path')
     parser.add_argument('--instance-type', default = 't3.mciro', choices = ['t3.micro'])
     parser.add_argument('--instance-type-micro', default = 't3.mciro')
     parser.add_argument('--delete-data', action = 'store_true')
@@ -658,6 +739,20 @@ if __name__ == '__main__':
     parser.add_argument('--git-tag')
     parser.add_argument('--git-key-path')
     parser.add_argument('--git-dir')
+    parser.add_argument('--conda-installer-name', default = 'Miniconda3-py39_4.11.0-Linux-x86_64.sh')
+    parser.add_argument('--conda', action = 'store_true')
+    parser.add_argument('--working-dir')
+    parser.add_argument('--job-script')
+    parser.add_argument('--job-script-embed', action = 'store_true')
+    parser.add_argument('--job-command', default = '')
+    parser.add_argument('--requirements-script')
+    parser.add_argument('--requirements-script-embed')
+    parser.add_argument('--requirements-command', default = '')
+    parser.add_argument('--pip-requirements')
+    parser.add_argument('--pip-requirements-embed')
+    parser.add_argument('--pip-install-packages', nargs = '*')
+    parser.add_argument('--apt-install-packages', nargs = '*')
+
     args = parser.parse_args()
 
     args.env = {**dict(kv.split('=') for kv in args.env), **{k : os.getenv(k, '') for k in args.env_export}}
@@ -667,6 +762,7 @@ if __name__ == '__main__':
 
     #TODO: echo nginx log server
     #TODO: SSM run + background
+    #TODO: save init script somewhere - to instance tags? curl metadata to file?
 
     # tar -c ./myfiles | aws s3 cp - s3://my-bucket/myobject"
     # https://docs.aws.amazon.com/cli/latest/topic/s3-config.html
