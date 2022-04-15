@@ -10,7 +10,7 @@ import subprocess
 import botocore
 import boto3
 
-po = 'poehali'
+po = 'paws'
 empty = [{}]
 
 def N(name = '', resource = '', suffix = '', sep = '_'):
@@ -198,8 +198,10 @@ def run(
         hot_bucket_sync_dir = None, 
         verbose = False, 
         dry = False, 
-        conda = True, 
+        conda = True,
         conda_installer_name = None,
+
+        shell = '/bin/bash',
 
         job_script,
         job_script_embed,
@@ -249,7 +251,7 @@ def run(
         **({f'/home/{username}/hot' : volume_hot ['VolumeId'] } if volume_hot  else {})
     }
     
-    init_script = f'''#!/bin/bash
+    init_script = f'''#!{shell}
     set -ex
     exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
     sudo apt update
@@ -285,7 +287,7 @@ def run(
             with open(job_script) as f:
                 job_command += f.read() + '\n'
         else:
-            job_command += f'bash "{job_script}"\n'
+            job_command += f'{shell} "{job_script}"\n'
 
 
     preamble = []
@@ -329,7 +331,7 @@ def run(
             with open(requirements_script_embed) as f:
                 requirements_scommand += f.read() + '\n'
         else:
-            requirements_command += f'bash "{requirements_script}"\n'
+            requirements_command += f'{shell} "{requirements_script}"\n'
     preamble.append(requirements_command)
     
     if data_script:
@@ -337,7 +339,7 @@ def run(
             with open(data_script_embed) as f:
                 data_scommand += f.read() + '\n'
         else:
-            data_command += f'bash "{data_script}"\n'
+            data_command += f'{shell} "{data_script}"\n'
     preamble.append(data_command)
 
     job_command = '\n'.join(preamble) + '\n\n' + job_command
@@ -345,7 +347,7 @@ def run(
     if job_command:
         init_script += f'''
     set +e
-    sudo -i -u {username} bash - << EOF
+    sudo -i -u {username} {shell} - << EOF
     {job_command}
     EOF
     set -e
@@ -728,7 +730,7 @@ if __name__ == '__main__':
     parser.add_argument('--dry', action = 'store_true')
     parser.add_argument('--region', default = 'us-east-1')
     parser.add_argument('--availability-zone', default = 'us-east-1a')
-    parser.add_argument('--name'  , default = 'poehalitest85')
+    parser.add_argument('--name'  , default = 'pawstest85')
     parser.add_argument('--username', default = 'ubuntu')
     parser.add_argument('--instance-id')
     parser.add_argument('--ssh', dest = 'ssh_when_running', action = 'store_true')
