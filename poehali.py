@@ -209,6 +209,10 @@ def run(
         requirements_script_embed,
         requirements_command,
 
+        data_script,
+        data_script_embed,
+        data_command,
+
         pip_requirements,
         pip_requirements_embed,
         pip_install_packages,
@@ -326,8 +330,15 @@ def run(
                 requirements_scommand += f.read() + '\n'
         else:
             requirements_command += f'bash "{requirements_script}"\n'
-
     preamble.append(requirements_command)
+    
+    if data_script:
+        if data_script_embed:
+            with open(data_script_embed) as f:
+                data_scommand += f.read() + '\n'
+        else:
+            data_command += f'bash "{data_script}"\n'
+    preamble.append(data_command)
 
     job_command = '\n'.join(preamble) + '\n\n' + job_command
 
@@ -748,6 +759,9 @@ if __name__ == '__main__':
     parser.add_argument('--requirements-script')
     parser.add_argument('--requirements-script-embed')
     parser.add_argument('--requirements-command', default = '')
+    parser.add_argument('--data-script')
+    parser.add_argument('--data-script-embed')
+    parser.add_argument('--data-command', default = '')
     parser.add_argument('--pip-requirements')
     parser.add_argument('--pip-requirements-embed')
     parser.add_argument('--pip-install-packages', nargs = '*')
