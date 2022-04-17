@@ -10,17 +10,18 @@ import subprocess
 import botocore
 import boto3
 
-po = 'paws'
+paws_prefix = 'paws'
+
 empty = [{}]
 
 def N(name = '', resource = '', suffix = '', sep = '_'):
     if not name and not resource and not suffix:
-        return po + sep
+        return paws_prefix + sep
 
-    return po + (sep + name if name else '') + (sep + resource if resource else '') + (sep + suffix if suffix else '')
+    return paws_prefix + (sep + name if name else '') + (sep + resource if resource else '') + (sep + suffix if suffix else '')
 
 def R(root):
-    return os.path.abspath(os.path.expanduser(os.path.join(root, '.' + po))) if not root.startswith('/') else root 
+    return os.path.abspath(os.path.expanduser(os.path.join(root, '.' + paws_prefix))) if not root.startswith('/') else root 
 
 def random_suffix():
     return ''.join(random.choices(string.ascii_uppercase.lower(), k = 4))
@@ -45,10 +46,10 @@ def setup(name, root, region, availability_zone, cold_disk_size_gb = 200, hot_di
     vpc_id = vpc['VpcId']
     
     print('- vpc is', vpc_id)
-    security_group = (ec2.describe_security_groups(Filters = [dict(Name = 'vpc-id', Values = [vpc_id]), dict(Name = 'group-name', Values = [po])])['SecurityGroups'] + empty)[0]
+    security_group = (ec2.describe_security_groups(Filters = [dict(Name = 'vpc-id', Values = [vpc_id]), dict(Name = 'group-name', Values = [paws_prefix])])['SecurityGroups'] + empty)[0]
     if not security_group:
         print('- security group not found, creating')
-        security_group = ec2.create_security_group(GroupName = po, Description = po, VpcId = vpc_id, TagSpecifications = TagSpecifications('security-group', name = po))
+        security_group = ec2.create_security_group(GroupName = paws_prefix, Description = paws_prefix, VpcId = vpc_id, TagSpecifications = TagSpecifications('security-group', name = paws_prefix))
         ec2.authorize_security_group_ingress(GroupId = security_group['GroupId'], IpPermissions = [dict(IpProtocol = 'tcp', FromPort = 22, ToPort = 22, IpRanges = [dict(CidrIp = cidr_public_internet)])])
     print('- security group is', security_group['GroupId'])
     
@@ -236,7 +237,7 @@ def run(
     assert subnet
     print('- subnet is', subnet.get('SubnetId'))
     
-    security_group = (ec2.describe_security_groups(Filters = [dict(Name = 'vpc-id', Values = [vpc['VpcId']]), dict(Name = 'group-name', Values = [po])])['SecurityGroups'] + empty)[0]
+    security_group = (ec2.describe_security_groups(Filters = [dict(Name = 'vpc-id', Values = [vpc['VpcId']]), dict(Name = 'group-name', Values = [paws_prefix])])['SecurityGroups'] + empty)[0]
     image = (ec2.describe_images(Filters = [dict(Name = 'name', Values = [image_name])])['Images'] + empty)[0]
     assert security_group and image 
     print('- security group is', security_group.get('GroupId'))
@@ -398,12 +399,12 @@ def ps(region, name, root, **ignored):
 
     #TODO: use Filters
     # https://github.com/aws/aws-cli/issues/4578
-    filters = [dict(Name = 'tag:Name', Values = [po + '*'])]
+    filters = [dict(Name = 'tag:Name', Values = [paws_prefix + '*'])]
 
     instances = [instance for reservation in ec2.describe_instances()['Reservations'] for instance in reservation['Instances']]
     for instance in instances:
         instance_name = ([tag['Value'] for tag in instance['Tags'] if tag['Key'] == 'Name'] + ['NoName'])[0]
-        if not instance_name.startswith(po):
+        if not instance_name.startswith(paws_prefix):
             continue
 
         state = instance['State']
@@ -495,7 +496,7 @@ def blkdeactivate(region, name, **ignored):
     volumes = ec2.describe_volumes()['Volumes']
     for volume in volumes:
         volume_name = ([tag['Value'] for tag in volume.get('Tags', []) if tag['Key'] == 'Name'] + ['NoName'])[0]
-        if (name and volume_name.startswith(po + '_' + name)) or (not name and volume_name.startswith(po)):
+        if (name and volume_name.startswith(paws_prefix + '_' + name)) or (not name and volume_name.startswith(paws_prefix)):
             if volume['State'] == 'available':
                 volume_ids_deleting.append(volume['VolumeId'])
                 ec2.delete_volume(VolumeId = volume['VolumeId'])
@@ -664,9 +665,9 @@ def clean(region, name, root, delete_data, **ignored):
 
     key_pair_names = [key['Name'] for key in ec2.describe_key_pairs(Filters = [dict(Name = 'tag:Name', Values = [N(name = name) + '*'])])['KeyPairs']]
     if not name:
-        key_pair_names = [key['Name'] for key in ec2.describe_keypairs(Filters = [dict(Name = 'tag:Name', Values = [po + '*'])])['KeyPairs']]
+        key_pair_names = [key['Name'] for key in ec2.describe_keypairs(Filters = [dict(Name = 'tag:Name', Values = [paws_prefix + '*'])])['KeyPairs']]
         
-        for security_group in ec2.describe_security_groups(Filters = [dict(Name = 'group-name', Values = [po])])['SecurityGroups']:
+        for security_group in ec2.describe_security_groups(Filters = [dict(Name = 'group-name', Values = [paws_prefix])])['SecurityGroups']:
             ec2.delete_security_group(GroupName = security_group['GroupName'])
             print('- deleted security group', security_group['GroupName'])
     

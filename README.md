@@ -1,5 +1,4 @@
-# Poehali
-A helper script for launching workloads (e.g. reproducing results of deep learning papers) on AWS.
+A helper script for launching deep learning workloads on AWS (e.g. reproducing results of deep learning papers). 
 
 **Does not support EC2-Classic accounts, relies on existence of default VPC/subnet/route table/internet gateway**
 
